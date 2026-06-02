@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trend-radar"
+version = "0.2.0"
+description = "Local A-share ETF trend radar"
+requires-python = ">=3.11"
+dependencies = [
+  "streamlit>=1.40,<2.0",
+  "pandas>=2.2",
+  "plotly>=5.22",
+  "akshare>=1.16",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

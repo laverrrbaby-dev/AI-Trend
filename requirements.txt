@@ -1,0 +1,4 @@
+streamlit>=1.40,<2.0
+pandas>=2.2
+plotly>=5.22
+akshare>=1.16

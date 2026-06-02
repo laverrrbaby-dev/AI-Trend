@@ -1,0 +1,495 @@
+from __future__ import annotations
+
+import sys
+import tempfile
+import types
+import unittest
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "tests"))
+
+from trend_radar.config import DEFAULT_HISTORY_FETCH_MAX_WORKERS  # noqa: E402
+
+
+def _install_app_import_stubs() -> None:
+    try:
+        import streamlit  # noqa: F401
+        import plotly.graph_objects  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+
+    class _ColumnConfig:
+        @staticmethod
+        def NumberColumn(label: str, **kwargs: object) -> dict[str, object]:
+            return {"label": label, "help": kwargs.get("help"), "type_config": {"type": "number", **kwargs}}
+
+        @staticmethod
+        def ProgressColumn(label: str, **kwargs: object) -> dict[str, object]:
+            return {"label": label, "help": kwargs.get("help"), "type_config": {"type": "progress", **kwargs}}
+
+        @staticmethod
+        def TextColumn(label: str, **kwargs: object) -> dict[str, object]:
+            return {"label": label, "help": kwargs.get("help"), "type_config": {"type": "text", **kwargs}}
+
+    streamlit_stub = types.ModuleType("streamlit")
+    streamlit_stub.__path__ = []
+    streamlit_stub.column_config = _ColumnConfig()
+
+    components_pkg = types.ModuleType("streamlit.components")
+    components_pkg.__path__ = []
+    components_v1 = types.ModuleType("streamlit.components.v1")
+    components_v1.html = lambda *args, **kwargs: None
+
+    plotly_pkg = types.ModuleType("plotly")
+    plotly_pkg.__path__ = []
+    graph_objects = types.ModuleType("plotly.graph_objects")
+    graph_objects.Figure = object
+    graph_objects.Scatter = object
+    graph_objects.Candlestick = object
+    graph_objects.Bar = object
+
+    sys.modules.setdefault("streamlit", streamlit_stub)
+    sys.modules.setdefault("streamlit.components", components_pkg)
+    sys.modules.setdefault("streamlit.components.v1", components_v1)
+    sys.modules.setdefault("plotly", plotly_pkg)
+    sys.modules.setdefault("plotly.graph_objects", graph_objects)
+
+
+_install_app_import_stubs()
+
+import app  # noqa: E402
+from helpers.data_factory import generate_radar_fixture  # noqa: E402
+from trend_radar.ui_data import load_snapshot  # noqa: E402
+
+
+DATA_DATE = "2026-05-28"
+NUMERIC_CONTRACT_COLUMNS = [
+    "主线得分",
+    "成交额(亿)",
+    "成交额排名",
+    "20日涨幅",
+    "60日涨幅",
+    "120日涨幅",
+    "5日份额变化",
+    "20日份额变化",
+]
+DISPLAY_NUMERIC_COLUMNS = [
+    "主线排名",
+    "主线得分",
+    "成交额Top30次数",
+    "成交额排名",
+    "20日涨幅",
+    "60日涨幅",
+    "120日涨幅",
+    "5日份额变化",
+    "20日份额变化",
+    "成交额(亿)",
+]
+REQUIRED_TERM_HELP_KEYS = [
+    "数据状态",
+    "头部主线",
+    "Top10均分",
+    "强趋势数量",
+    "新进Top10",
+    "趋势状态",
+    "排序",
+    "明细来源",
+    "ETF明细",
+    "主线排名",
+    "主线得分",
+    "成交额Top30次数",
+    "成交额Top30",
+    "成交额排名",
+    "20日涨幅",
+    "60日涨幅",
+    "120日涨幅",
+    "5日份额变化",
+    "20日份额变化",
+    "成交额(亿)",
+    "数据质量",
+    "份额变化",
+    "成交额热度",
+    "份额流入",
+    "趋势强度",
+    "趋势结构",
+]
+TABLE_HELP_COLUMNS = [
+    "主线排名",
+    "主线得分",
+    "趋势状态",
+    "成交额Top30次数",
+    "成交额排名",
+    "20日涨幅",
+    "60日涨幅",
+    "120日涨幅",
+    "5日份额变化",
+    "20日份额变化",
+    "成交额(亿)",
+    "数据质量",
+]
+
+
+class FunctionalContractsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        generate_radar_fixture(self.root, DATA_DATE)
+        self.radar_csv = self.root / "data" / "radar" / f"{DATA_DATE}.csv"
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def test_real_cache_keeps_numeric_contract_columns(self) -> None:
+        frame = pd.read_csv(self.radar_csv, dtype={"代码": str})
+
+        for column in NUMERIC_CONTRACT_COLUMNS:
+            with self.subTest(column=column):
+                self.assertIn(column, frame.columns)
+                self.assertTrue(pd.api.types.is_numeric_dtype(frame[column]), f"{column} is {frame[column].dtype}")
+
+    def test_load_snapshot_defaults_to_mainline_rank_order(self) -> None:
+        snapshot = load_snapshot(DATA_DATE, root=self.root)
+        expected = pd.read_csv(self.radar_csv, dtype={"代码": str}).sort_values("排名").reset_index(drop=True)
+
+        self.assertEqual(snapshot["排名"].tolist(), sorted(snapshot["排名"].tolist()))
+        self.assertEqual(snapshot["代码"].head(20).tolist(), expected["代码"].head(20).tolist())
+
+    def test_amount_sort_matches_csv_numeric_descending_order(self) -> None:
+        snapshot = load_snapshot(DATA_DATE, root=self.root)
+        actual = app._sort_snapshot_for_display(snapshot, "成交额").head(20)["代码"].tolist()
+        expected = (
+            pd.read_csv(self.radar_csv, dtype={"代码": str})
+            .sort_values("成交额(亿)", ascending=False)
+            .head(20)["代码"]
+            .tolist()
+        )
+
+        self.assertEqual(actual, expected)
+
+    def test_amount_rank_sort_is_monotonic_and_matches_amount_direction(self) -> None:
+        snapshot = load_snapshot(DATA_DATE, root=self.root)
+        sorted_frame = app._sort_snapshot_for_display(snapshot, "成交额排名")
+
+        self.assertTrue(sorted_frame["成交额排名"].is_monotonic_increasing)
+        self.assertTrue(sorted_frame["成交额(亿)"].is_monotonic_decreasing)
+
+    def test_display_table_labels_mainline_rank_and_keeps_sort_columns_numeric(self) -> None:
+        snapshot = load_snapshot(DATA_DATE, root=self.root)
+        table = app._display_table(snapshot.head(10))
+
+        self.assertIn("主线排名", table.columns)
+        self.assertNotIn("排名", table.columns)
+        self.assertEqual(
+            list(table.columns)[list(table.columns).index("成交额排名") + 1],
+            "成交额(亿)",
+        )
+        for column in DISPLAY_NUMERIC_COLUMNS:
+            with self.subTest(column=column):
+                self.assertTrue(pd.api.types.is_numeric_dtype(table[column]), f"{column} is {table[column].dtype}")
+
+    def test_table_columns_use_numeric_display_formatting(self) -> None:
+        columns = app._table_columns()
+
+        self.assertEqual(columns["主线得分"]["type_config"]["type"], "progress")
+        self.assertEqual(columns["主线得分"]["type_config"]["format"], "%.1f")
+        self.assertEqual(columns["主线排名"]["type_config"]["format"], "%d")
+        self.assertEqual(columns["成交额排名"]["type_config"]["format"], "%d")
+        self.assertEqual(columns["成交额(亿)"]["type_config"]["format"], "%.2f")
+        for column in ["20日涨幅", "60日涨幅", "120日涨幅", "5日份额变化", "20日份额变化"]:
+            with self.subTest(column=column):
+                self.assertEqual(columns[column]["type_config"]["type"], "number")
+                self.assertEqual(columns[column]["type_config"]["format"], "%+.2f%%")
+
+    def test_term_help_contains_required_core_copy(self) -> None:
+        for key in REQUIRED_TERM_HELP_KEYS:
+            with self.subTest(key=key):
+                self.assertIn(key, app.TERM_HELP)
+                self.assertTrue(app.TERM_HELP[key].strip())
+
+        self.assertIn(">=88 强趋势", app.TERM_HELP["趋势状态"])
+        self.assertIn("成交额热度 45%", app.TERM_HELP["主线得分"])
+        self.assertIn("全候选 A股权益 ETF", app.TERM_HELP["成交额Top30次数"])
+        self.assertIn("45%/35%/20%", app.TERM_HELP["趋势强度"])
+        self.assertIn("MA20 > MA60 > MA120", app.TERM_HELP["趋势结构"])
+
+    def test_table_columns_include_core_help_text(self) -> None:
+        columns = app._table_columns()
+
+        for column in TABLE_HELP_COLUMNS:
+            with self.subTest(column=column):
+                self.assertIn("help", columns[column])
+                self.assertEqual(columns[column]["help"], app.TERM_HELP[column])
+
+    def test_table_clicks_update_shared_detail_selection(self) -> None:
+        snapshot = load_snapshot(DATA_DATE, root=self.root)
+        top10 = snapshot.head(10).copy()
+        filtered = app._sort_snapshot_for_display(snapshot, "成交额")
+        detail_options = app._detail_options(snapshot)
+        selectbox_key = f"detail-select-{DATA_DATE}"
+        state: dict[str, object] = {}
+
+        top10_code = app._resolve_selected_code(
+            snapshot,
+            top10,
+            filtered,
+            _selection_event([1]),
+            _selection_event([]),
+            DATA_DATE,
+            state,
+            detail_options,
+            selectbox_key,
+        )
+        self.assertEqual(top10_code, str(top10.iloc[1]["代码"]))
+
+        ranking_code = app._resolve_selected_code(
+            snapshot,
+            top10,
+            filtered,
+            _selection_event([1]),
+            _selection_event([2]),
+            DATA_DATE,
+            state,
+            detail_options,
+            selectbox_key,
+        )
+        self.assertEqual(ranking_code, str(filtered.iloc[2]["代码"]))
+        self.assertEqual(state[app.DETAIL_CODE_STATE_KEY], ranking_code)
+
+    def test_detail_selectbox_state_can_drive_selection_without_table_click(self) -> None:
+        snapshot = load_snapshot(DATA_DATE, root=self.root)
+        detail_options = app._detail_options(snapshot)
+        selectbox_key = f"detail-select-{DATA_DATE}"
+        labels = list(detail_options)
+        state: dict[str, object] = {selectbox_key: labels[3]}
+
+        selected_code = app._resolve_selected_code(
+            snapshot,
+            snapshot.head(10),
+            snapshot,
+            _selection_event([]),
+            _selection_event([]),
+            DATA_DATE,
+            state,
+            detail_options,
+            selectbox_key,
+        )
+
+        self.assertEqual(selected_code, detail_options[labels[3]])
+        self.assertEqual(state[app.DETAIL_CODE_STATE_KEY], selected_code)
+
+    def test_price_chart_uses_candlestick_four_emas_volume_and_rangebreaks(self) -> None:
+        if app.go.Figure is object:
+            self.skipTest("plotly is not installed; import stub cannot inspect traces")
+        history = pd.DataFrame(
+            {
+                "日期": pd.to_datetime(["2026-05-22", "2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29"]),
+                "开盘价": [1.0, 1.1, 1.2, 1.15, 1.18],
+                "最高价": [1.12, 1.22, 1.25, 1.2, 1.24],
+                "最低价": [0.98, 1.05, 1.12, 1.1, 1.14],
+                "收盘价": [1.1, 1.2, 1.15, 1.18, 1.22],
+                "成交量": [10000, 12000, 11000, 13000, 12500],
+                "EMA13": [1.1, 1.11, 1.12, 1.13, 1.14],
+                "EMA26": [1.1, 1.105, 1.11, 1.12, 1.13],
+                "EMA144": [1.1, 1.101, 1.103, 1.105, 1.107],
+                "EMA169": [1.1, 1.101, 1.102, 1.104, 1.106],
+            }
+        )
+
+        fig = app._price_chart(history, "fixture")
+
+        self.assertEqual([trace.type for trace in fig.data], ["candlestick", "scatter", "scatter", "scatter", "scatter", "bar"])
+        self.assertEqual(fig.data[-1].name, "成交量")
+        self.assertFalse(fig.layout.xaxis.rangeslider.visible)
+        self.assertEqual(app._trading_date_rangebreaks(history["日期"])[1]["values"], ["2026-05-25"])
+
+    def test_refresh_status_view_contract(self) -> None:
+        available = ["2026-05-28", "2026-05-29"]
+
+        running = app._refresh_status_view(
+            {"status": "running", "target_date": "2026-05-29"},
+            "2026-05-28",
+            available,
+        )
+        self.assertEqual(running["message"], "正在更新 2026-05-29 数据...")
+        self.assertFalse(running["show_refresh_button"])
+
+        running_progress = app._refresh_status_view(
+            {
+                "status": "running",
+                "target_date": "2026-05-29",
+                "phase": "fetch_history",
+                "updated_at": "2026-05-30 09:00:00",
+                "progress": {
+                    "completed": 12,
+                    "total": 455,
+                    "current_code": "560580",
+                    "current_name": "测试ETF",
+                },
+            },
+            "2026-05-28",
+            available,
+            now=datetime(2026, 5, 30, 9, 1, tzinfo=app.ASIA_SHANGHAI),
+        )
+        self.assertEqual(running_progress["message"], "正在更新 2026-05-29 数据：历史行情 12/455，当前 560580")
+        self.assertEqual(running_progress["progress_completed"], 12)
+        self.assertEqual(running_progress["progress_total"], 455)
+        self.assertFalse(running_progress["is_stale"])
+
+        parallel_progress = app._refresh_status_view(
+            {
+                "status": "running",
+                "target_date": "2026-05-29",
+                "phase": "fetch_history",
+                "updated_at": "2026-05-30 09:00:00",
+                "progress": {
+                    "completed": 36,
+                    "total": 455,
+                    "current_code": "512290",
+                    "skipped_cached": 24,
+                    "fetched": 12,
+                    "errors": 0,
+                    "max_workers": DEFAULT_HISTORY_FETCH_MAX_WORKERS,
+                },
+            },
+            "2026-05-28",
+            available,
+            now=datetime(2026, 5, 30, 9, 1, tzinfo=app.ASIA_SHANGHAI),
+        )
+        self.assertEqual(
+            parallel_progress["message"],
+            (
+                "正在更新 2026-05-29 数据：历史行情 36/455，缓存 24，新拉取 12，"
+                f"失败 0，并发 {DEFAULT_HISTORY_FETCH_MAX_WORKERS}，当前 512290"
+            ),
+        )
+
+        stale_progress = app._refresh_status_view(
+            {
+                "status": "running",
+                "target_date": "2026-05-29",
+                "phase": "fetch_history",
+                "updated_at": "2026-05-30 09:00:00",
+                "progress": {"completed": 12, "total": 455, "current_code": "560580"},
+            },
+            "2026-05-28",
+            available,
+            now=datetime(2026, 5, 30, 9, 4, 1, tzinfo=app.ASIA_SHANGHAI),
+        )
+        self.assertTrue(stale_progress["is_stale"])
+
+        succeeded = app._refresh_status_view(
+            {"status": "succeeded", "target_date": "2026-05-29", "actual_date": "2026-05-29"},
+            "2026-05-28",
+            available,
+        )
+        self.assertEqual(succeeded["level"], "success")
+        self.assertEqual(succeeded["message"], "已生成 2026-05-29 数据")
+        self.assertTrue(succeeded["show_refresh_button"])
+
+        stale_source = app._refresh_status_view(
+            {"status": "succeeded", "target_date": "2026-05-29", "actual_date": "2026-05-28"},
+            "2026-05-28",
+            available,
+        )
+        self.assertEqual(stale_source["level"], "warning")
+        self.assertEqual(stale_source["message"], "数据源最新为 2026-05-28，已生成对应数据")
+        self.assertFalse(stale_source["show_refresh_button"])
+
+        failed = app._refresh_status_view(
+            {"status": "failed", "target_date": "2026-05-29", "error": "network down"},
+            "2026-05-28",
+            available,
+        )
+        self.assertEqual(failed["level"], "error")
+        self.assertIn("network down", failed["message"])
+
+        skipped = app._refresh_status_view(
+            {"status": "skipped", "target_date": "2026-05-29", "generated_at": "2026-05-29 16:00:00"},
+            "2026-05-29",
+            available,
+        )
+        self.assertEqual(skipped["message"], "当前已是最新 2026-05-29 数据，生成 2026-05-29 16:00:00")
+
+        success_stats = app._refresh_status_view(
+            {"status": "skipped", "target_date": "2026-05-29"},
+            "2026-05-29",
+            available,
+            fetch_report={"history_total": 455, "history_success": 455, "history_failed": 0},
+        )
+        self.assertEqual(success_stats["history_stats_message"], "历史行情：成功 455 / 总数 455，失败 0")
+        self.assertFalse(success_stats["show_retry_button"])
+
+        stock_problem_stats = app._refresh_status_view(
+            {"status": "skipped", "target_date": "2026-05-29"},
+            "2026-05-29",
+            available,
+            fetch_report={"history_total": 455, "history_success": 455, "history_failed": 0},
+            problem_summary={"snapshot_count": 2, "problem_count": 162, "dates": ["2026-05-28", "2026-06-01"]},
+        )
+        self.assertEqual(stock_problem_stats["problem_summary_message"], "存量待补拉：2 个日期，失败/缺失 162 个历史文件：2026-05-28、2026-06-01")
+        self.assertTrue(stock_problem_stats["show_retry_button"])
+
+        failed_stats = app._refresh_status_view(
+            {"status": "skipped", "target_date": "2026-05-29"},
+            "2026-05-29",
+            available,
+            fetch_report={
+                "history_total": 433,
+                "history_success": 431,
+                "history_failed": 2,
+                "failed_history": [
+                    {"code": "159031", "name": "粮食ETF博时", "error": "empty history"},
+                    {"code": "517130", "name": "N云计算ETF嘉实", "error": "empty history"},
+                ],
+            },
+        )
+        self.assertEqual(failed_stats["history_failed"], 2)
+        self.assertEqual(failed_stats["failed_history_codes"], ["159031", "517130"])
+        self.assertIn("失败代码 159031、517130", failed_stats["history_stats_message"])
+        self.assertFalse(failed_stats["show_retry_button"])
+
+        retry_progress = app._refresh_status_view(
+            {
+                "status": "running",
+                "target_date": "存量问题",
+                "phase": "retry_fetch_history",
+                "updated_at": "2026-05-30 09:00:00",
+                "progress": {
+                    "completed": 36,
+                    "total": 414,
+                    "current_code": "512290",
+                    "skipped_cached": 24,
+                    "fetched": 12,
+                    "errors": 0,
+                    "max_workers": DEFAULT_HISTORY_FETCH_MAX_WORKERS,
+                    "snapshot_completed": 0,
+                    "snapshot_total": 2,
+                    "current_source_date": "2026-05-28",
+                },
+            },
+            "2026-05-29",
+            available,
+        )
+        self.assertEqual(
+            retry_progress["message"],
+            (
+                "正在补拉存量问题：日期 1/2 2026-05-28，历史行情 36/414，缓存 24，"
+                f"新拉取 12，失败 0，并发 {DEFAULT_HISTORY_FETCH_MAX_WORKERS}，当前 512290"
+            ),
+        )
+
+
+def _selection_event(rows: list[int]) -> object:
+    return types.SimpleNamespace(selection=types.SimpleNamespace(rows=rows))
+
+
+if __name__ == "__main__":
+    unittest.main()
