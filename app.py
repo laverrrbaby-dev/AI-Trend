@@ -851,16 +851,7 @@ def _render_changes(changes: dict[str, list[str]]) -> None:
 
 
 def _render_data_quality(meta: dict[str, object]) -> None:
-    quality = meta.get("data_quality")
-    if not isinstance(quality, dict) or quality.get("status") in {"OK", "MOCK"}:
-        return
-
-    warnings = quality.get("warnings", {})
-    fragments = []
-    if warnings:
-        fragments.append(f"质量提示 {warnings}")
-    if fragments:
-        st.warning("；".join(fragments))
+    return
 
 
 def _render_detail(row: pd.Series, selected_date: str) -> None:
