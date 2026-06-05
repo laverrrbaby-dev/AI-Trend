@@ -1,4 +1,4 @@
-"""US stock turnover snapshots from public TradingView scanner data."""
+"""US stock turnover snapshots from public US market scanner data."""
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ US_REFRESH_FAILED = "failed"
 US_REFRESH_SKIPPED = "skipped"
 
 TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
+NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=8000&offset=0&download=true"
 US_TOP_TURNOVER_LIMIT = 20
 US_NAME_MAP_FILE = "name_map.csv"
 US_STOCK_COLUMNS = ["代码", "名称", "英文名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"]
@@ -66,6 +67,13 @@ _TRADINGVIEW_HEADERS = {
     "Content-Type": "application/json",
     "Origin": "https://www.tradingview.com",
     "Referer": "https://www.tradingview.com/",
+}
+_NASDAQ_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://www.nasdaq.com",
+    "Referer": "https://www.nasdaq.com/market-activity/stocks/screener",
 }
 
 US_CN_NAME_SEED = {
@@ -269,7 +277,7 @@ def refresh_us_stock_turnover(
                 source=str(cached_metadata.get("source") or "cached"),
                 row_count=len(load_us_stock_snapshot(cached_date, root)),
                 error=str(exc),
-                message=f"TradingView 更新失败，继续展示 {cached_date} 缓存",
+                message=f"美股成交额更新失败，继续展示 {cached_date} 缓存",
             )
             _write_status(root, result)
             return result
@@ -327,6 +335,28 @@ def fetch_us_top_turnover(
     limit: int = US_TOP_TURNOVER_LIMIT,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     loader = fetch_json or _fetch_json
+    fallback_errors: list[str] = []
+    for source, source_fetcher in [
+        ("tradingview", _fetch_tradingview_top_turnover),
+        ("nasdaq", _fetch_nasdaq_top_turnover),
+    ]:
+        try:
+            frame, metadata = source_fetcher(root, loader, limit)
+        except Exception as exc:  # noqa: BLE001 - each public data source is an optional fallback
+            fallback_errors.append(f"{source}: {exc}")
+            continue
+        if fallback_errors:
+            metadata["fallback_errors"] = fallback_errors
+        metadata["attempted_sources"] = [*[_source_name(error) for error in fallback_errors], source]
+        return frame, metadata
+    raise RuntimeError(f"All US stock turnover sources failed: {'; '.join(fallback_errors)}")
+
+
+def _fetch_tradingview_top_turnover(
+    root: Path,
+    loader: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]],
+    limit: int,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     payload = loader(TRADINGVIEW_SCANNER_URL, _TRADINGVIEW_HEADERS, TRADINGVIEW_PAYLOAD)
     rows = payload.get("data", [])
     name_map = load_us_name_map(root)
@@ -337,6 +367,26 @@ def fetch_us_top_turnover(
         "input_rows": len(rows) if isinstance(rows, list) else 0,
         "filtered_rows": int(len(frame)),
         "missing_cn_name_codes": missing_codes,
+    }
+    return frame, metadata
+
+
+def _fetch_nasdaq_top_turnover(
+    root: Path,
+    loader: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]],
+    limit: int,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    payload = loader(NASDAQ_SCREENER_URL, _NASDAQ_HEADERS, {})
+    rows = _extract_nasdaq_rows(payload)
+    name_map = load_us_name_map(root)
+    frame, missing_codes = _normalize_nasdaq_rows(rows, name_map, limit)
+    metadata = {
+        "source": "nasdaq",
+        "provider": "nasdaq_screener_download",
+        "input_rows": len(rows),
+        "filtered_rows": int(len(frame)),
+        "missing_cn_name_codes": missing_codes,
+        "turnover_method": "lastsale_x_volume",
     }
     return frame, metadata
 
@@ -375,7 +425,52 @@ def _normalize_tradingview_rows(
                 "市值": _parse_number(item.get("market_cap_basic")),
             }
         )
-    frame = _top_turnover_frame(records, limit)
+    frame = _top_turnover_frame(records, limit, "direct US stock")
+    present_codes = set(frame["代码"].tolist())
+    return frame, [code for code in missing_codes if code in present_codes]
+
+
+def _extract_nasdaq_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    data = payload.get("data")
+    if isinstance(data, dict) and isinstance(data.get("rows"), list):
+        return [row for row in data["rows"] if isinstance(row, dict)]
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    rows = payload.get("rows")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def _normalize_nasdaq_rows(rows: list[dict[str, Any]], name_map: dict[str, str], limit: int) -> tuple[pd.DataFrame, list[str]]:
+    records: list[dict[str, Any]] = []
+    missing_codes: list[str] = []
+    for row in rows:
+        symbol = _normalize_symbol(row.get("symbol"))
+        english_name = str(row.get("name") or symbol).strip()
+        if not symbol or not _is_supported_us_stock_name(english_name):
+            continue
+        price = _parse_number(row.get("lastsale"))
+        volume = _parse_number(row.get("volume"))
+        if price is None or price <= 0 or volume is None or volume <= 0:
+            continue
+        display_name = name_map.get(symbol)
+        if not display_name:
+            display_name = english_name
+            missing_codes.append(symbol)
+        records.append(
+            {
+                "代码": symbol,
+                "名称": display_name,
+                "英文名称": english_name,
+                "最新价": price,
+                "涨跌幅": _parse_number(row.get("pctchange")),
+                "涨跌额": _parse_number(row.get("netchange")),
+                "成交额": price * volume,
+                "市值": _parse_number(row.get("marketCap")),
+            }
+        )
+    frame = _top_turnover_frame(records, limit, "Nasdaq computed US stock")
     present_codes = set(frame["代码"].tolist())
     return frame, [code for code in missing_codes if code in present_codes]
 
@@ -384,14 +479,44 @@ def _row_dict(values: list[Any]) -> dict[str, Any]:
     return {column: values[index] if index < len(values) else None for index, column in enumerate(TRADINGVIEW_COLUMNS)}
 
 
-def _top_turnover_frame(records: list[dict[str, Any]], limit: int) -> pd.DataFrame:
+def _top_turnover_frame(records: list[dict[str, Any]], limit: int, source_label: str) -> pd.DataFrame:
     frame = pd.DataFrame(records)
     if frame.empty:
-        raise RuntimeError("No direct US stock turnover rows were available")
+        raise RuntimeError(f"No {source_label} turnover rows were available")
     frame = frame[US_STOCK_COLUMNS].sort_values("成交额", ascending=False).head(limit).reset_index(drop=True)
     if len(frame) < limit:
-        raise RuntimeError(f"Only {len(frame)} direct US stock turnover rows were available")
+        raise RuntimeError(f"Only {len(frame)} {source_label} turnover rows were available")
     return frame
+
+
+def _normalize_symbol(value: object) -> str:
+    return str(value or "").strip().upper()
+
+
+def _is_supported_us_stock_name(name: str) -> bool:
+    normalized = name.lower()
+    excluded_terms = [
+        " warrant",
+        " warrants",
+        " right",
+        " rights",
+        " unit",
+        " units",
+        " preferred",
+        " preference",
+        " notes",
+        " note due",
+        " bond",
+        " debenture",
+        " etf",
+        " etn",
+        " fund",
+    ]
+    return not any(term in f" {normalized}" for term in excluded_terms)
+
+
+def _source_name(error_text: str) -> str:
+    return error_text.split(":", 1)[0]
 
 
 def _parse_number(value: object) -> float | None:
@@ -429,11 +554,12 @@ def _fetch_json(
             if attempt < attempts:
                 sleep(retry_delay)
     error_text = "; ".join(errors)
-    raise RuntimeError(f"TradingView scanner request failed after {attempts} attempts: {error_text}") from last_exc
+    raise RuntimeError(f"scanner request failed after {attempts} attempts: {error_text}") from last_exc
 
 
 def _fetch_json_once(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int) -> dict[str, Any]:
-    request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+    data = json.dumps(payload).encode("utf-8") if payload else None
+    request = urllib.request.Request(url, data=data, headers=headers)
     context = ssl.create_default_context(cafile=certifi.where())
     context.set_alpn_protocols(["http/1.1"])
     with urllib.request.urlopen(request, timeout=timeout, context=context) as response:

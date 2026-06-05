@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trend_radar.us_stocks import (  # noqa: E402
     NEW_YORK,
+    NASDAQ_SCREENER_URL,
     TRADINGVIEW_SCANNER_URL,
     US_REFRESH_FAILED,
     US_REFRESH_SKIPPED,
@@ -114,6 +115,32 @@ class UsStocksTests(unittest.TestCase):
             self.assertIn("MISS", metadata["missing_cn_name_codes"])
             self.assertEqual(read_us_stock_refresh_status(root)["status"], US_REFRESH_SUCCEEDED)
 
+    def test_tradingview_failure_falls_back_to_nasdaq_download(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            calls: list[str] = []
+
+            def fake_fetch(url: str, headers: dict[str, str], payload: dict[str, object]) -> dict[str, object]:
+                calls.append(url)
+                if url == TRADINGVIEW_SCANNER_URL:
+                    raise RuntimeError("tradingview down")
+                if url == NASDAQ_SCREENER_URL:
+                    return {"data": {"rows": _nasdaq_rows()}}
+                raise AssertionError(f"unexpected URL {url}")
+
+            frame, metadata = fetch_us_top_turnover(root=root, fetch_json=fake_fetch)
+
+            self.assertEqual(calls, [TRADINGVIEW_SCANNER_URL, NASDAQ_SCREENER_URL])
+            self.assertEqual(metadata["source"], "nasdaq")
+            self.assertEqual(metadata["provider"], "nasdaq_screener_download")
+            self.assertEqual(metadata["turnover_method"], "lastsale_x_volume")
+            self.assertIn("tradingview: tradingview down", metadata["fallback_errors"])
+            self.assertEqual(len(frame), 20)
+            self.assertNotIn("WARR", frame["代码"].tolist())
+            mu = frame[frame["代码"] == "MU"].iloc[0]
+            self.assertEqual(mu["名称"], "美光科技")
+            self.assertEqual(float(mu["成交额"]), 10.0 * 900_000_000.0)
+
     def test_existing_target_cache_skips_fetch_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
@@ -150,7 +177,7 @@ class UsStocksTests(unittest.TestCase):
             self.assertEqual(result.status, US_REFRESH_FAILED)
             self.assertEqual(result.actual_date, "2026-06-02")
             self.assertEqual(latest_us_stock_cache_date(root), "2026-06-02")
-            self.assertEqual(calls, [TRADINGVIEW_SCANNER_URL])
+            self.assertEqual(calls, [TRADINGVIEW_SCANNER_URL, NASDAQ_SCREENER_URL])
             self.assertIn("继续展示 2026-06-02 缓存", result.message or "")
 
     def test_missing_direct_turnover_does_not_generate_wrong_ranking(self) -> None:
@@ -161,7 +188,8 @@ class UsStocksTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as context:
             fetch_us_top_turnover(fetch_json=fake_fetch)
 
-        self.assertIn("No direct US stock turnover rows", str(context.exception))
+        self.assertIn("tradingview: No direct US stock turnover rows", str(context.exception))
+        self.assertIn("nasdaq: No Nasdaq computed US stock turnover rows", str(context.exception))
 
     def test_default_tradingview_fetch_retries_transient_reset(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -208,6 +236,47 @@ def _tradingview_rows() -> list[dict[str, object]]:
             )
         )
     return rows
+
+
+def _nasdaq_rows() -> list[dict[str, object]]:
+    rows = [
+        _nasdaq_row("WARR", "Warrant Example Warrants", "$50.00", "1.0", "1.0%", "999999999", "1000000000"),
+        _nasdaq_row("MU", "Micron Technology Inc. Common Stock", "$10.00", "0.27", "2.76%", "900000000", "1200000000000"),
+        _nasdaq_row("XYZ", "Mapped Stock Inc. Common Stock", "$50.00", "0.50", "1.0%", "170000000", "100000000000"),
+    ]
+    for index in range(25):
+        rows.append(
+            _nasdaq_row(
+                f"STK{index:02d}",
+                f"Stock {index:02d} Common Stock",
+                f"${100 + index}.00",
+                f"{index / 20:.2f}",
+                f"{index / 10:.2f}%",
+                str((index + 1) * 1_000_000),
+                str((index + 1) * 1_000_000_000),
+            )
+        )
+    return rows
+
+
+def _nasdaq_row(
+    symbol: str,
+    name: str,
+    last_sale: str,
+    net_change: str,
+    pct_change: str,
+    volume: str,
+    market_cap: str,
+) -> dict[str, object]:
+    return {
+        "symbol": symbol,
+        "name": name,
+        "lastsale": last_sale,
+        "netchange": net_change,
+        "pctchange": pct_change,
+        "volume": volume,
+        "marketCap": market_cap,
+    }
 
 
 def _tv_row(
