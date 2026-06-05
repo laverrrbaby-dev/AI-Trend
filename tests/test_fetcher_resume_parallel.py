@@ -20,24 +20,31 @@ class _FakeAk:
         histories: dict[str, pd.DataFrame],
         failures: set[str] | None = None,
         transient_failures: dict[str, int] | None = None,
+        spot_date: str | None = None,
+        spot_amounts: dict[str, float] | None = None,
     ) -> None:
         self.histories = histories
         self.failures = failures or set()
         self.transient_failures = transient_failures or {}
+        self.spot_date = spot_date
+        self.spot_amounts = spot_amounts or {}
         self.history_calls: list[str] = []
 
     def fund_etf_spot_em(self) -> pd.DataFrame:
         codes = sorted(self.histories)
-        return pd.DataFrame(
+        frame = pd.DataFrame(
             {
                 "代码": codes,
                 "名称": [f"测试ETF{code}" for code in codes],
                 "最新价": [1.2] * len(codes),
-                "成交额": [500_000_000] * len(codes),
+                "成交额": [self.spot_amounts.get(code, 500_000_000) for code in codes],
                 "最新份额": [100_000_000] * len(codes),
                 "总市值": [500_000_000] * len(codes),
             }
         )
+        if self.spot_date is not None:
+            frame["数据日期"] = self.spot_date
+        return frame
 
     def fund_etf_hist_em(self, symbol: str, **kwargs: object) -> pd.DataFrame:
         self.history_calls.append(symbol)
@@ -239,6 +246,58 @@ class FetcherResumeParallelTests(unittest.TestCase):
             self.assertEqual(report["skipped_cached"], 1)
             self.assertEqual(report["fetched_history_files"], 1)
 
+    def test_mismatched_spot_date_uses_previous_candidate_universe(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            previous_date = "2026-06-03"
+            data_date = "2026-06-04"
+            codes = ["159995", "510300", "588000"]
+            self._write_candidates(root, previous_date, codes)
+            fake_ak = _FakeAk(
+                {code: self._raw_history(data_date) for code in codes},
+                spot_date="2026-06-05",
+                spot_amounts={code: 1_000_000 for code in codes},
+            )
+
+            result = self._fetch(fake_ak, data_date, root=root, resume=True, max_workers=2)
+
+            self.assertEqual(result.candidate_rows, 3)
+            self.assertEqual(set(fake_ak.history_calls), set(codes))
+            report = self._read_report(root, data_date)
+            self.assertEqual(report["spot_data_dates"], ["2026-06-05"])
+            self.assertFalse(report["spot_data_matches_target"])
+            self.assertFalse(report["spot_derived_metrics_enabled"])
+            self.assertEqual(report["candidate_source"], "previous_candidates")
+            self.assertEqual(report["candidate_source_date"], previous_date)
+            candidates = pd.read_csv(root / "data" / "normalized" / data_date / "spot_candidates.csv")
+            self.assertTrue(candidates["amount_yi"].isna().all())
+            self.assertTrue(candidates["latest_share_yi"].isna().all())
+
+    def test_mismatched_cached_candidates_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            previous_date = "2026-06-03"
+            data_date = "2026-06-04"
+            self._write_candidates(root, previous_date, ["159995", "510300"])
+            self._write_candidates(root, data_date, ["588000"], candidate_data_date="2026-06-05")
+            fake_ak = _FakeAk(
+                {
+                    "159995": self._raw_history(data_date),
+                    "510300": self._raw_history(data_date),
+                    "588000": self._raw_history(data_date),
+                },
+                spot_date="2026-06-05",
+                spot_amounts={"159995": 1_000_000, "510300": 1_000_000, "588000": 1_000_000},
+            )
+
+            result = self._fetch(fake_ak, data_date, root=root, resume=True, max_workers=2)
+
+            self.assertEqual(result.candidate_rows, 2)
+            self.assertEqual(set(fake_ak.history_calls), {"159995", "510300"})
+            report = self._read_report(root, data_date)
+            self.assertEqual(report["candidate_source"], "previous_candidates")
+            self.assertEqual(report["candidate_source_date"], previous_date)
+
     def _write_normalized_history(self, root: Path, data_date: str, code: str, latest_date: str | None = None) -> None:
         path = root / "data" / "normalized" / data_date / "history" / f"{code}.csv"
         path.parent.mkdir(parents=True)
@@ -283,6 +342,33 @@ class FetcherResumeParallelTests(unittest.TestCase):
                 "成交量": [100_000],
                 "涨跌幅": [2.0],
                 "数据日期": [data_date],
+            }
+        ).to_csv(path, index=False)
+
+    def _write_candidates(
+        self,
+        root: Path,
+        data_date: str,
+        codes: list[str],
+        candidate_data_date: str | None = None,
+    ) -> None:
+        path = root / "data" / "normalized" / data_date / "spot_candidates.csv"
+        path.parent.mkdir(parents=True)
+        pd.DataFrame(
+            {
+                "code": codes,
+                "name": [f"测试ETF{code}" for code in codes],
+                "latest_price": [1.2] * len(codes),
+                "pct_change": [0.5] * len(codes),
+                "amount_yi": [5.0] * len(codes),
+                "volume": [100_000] * len(codes),
+                "data_date": [candidate_data_date or data_date] * len(codes),
+                "update_time": [f"{candidate_data_date or data_date} 16:00:00+08:00"] * len(codes),
+                "latest_share_yi": [10.0] * len(codes),
+                "total_market_cap_yi": [12.0] * len(codes),
+                "float_market_cap_yi": [12.0] * len(codes),
+                "is_equity_etf": [True] * len(codes),
+                "universe_reason": ["a_share_equity_candidate"] * len(codes),
             }
         ).to_csv(path, index=False)
 

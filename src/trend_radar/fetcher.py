@@ -23,6 +23,15 @@ import certifi
 import pandas as pd
 
 _SYSTEM_PROXIES = urllib.request.getproxies()
+SPOT_DERIVED_COLUMNS = (
+    "latest_price",
+    "pct_change",
+    "amount_yi",
+    "volume",
+    "latest_share_yi",
+    "total_market_cap_yi",
+    "float_market_cap_yi",
+)
 
 for _proxy_key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
     os.environ.pop(_proxy_key, None)
@@ -72,6 +81,10 @@ class HistoryFetchOutcome:
     provider: str | None = None
     latest_date: str | None = None
     stale: bool = False
+    primary_provider: str | None = None
+    primary_error: str | None = None
+    fallback_provider: str | None = None
+    fallback_error: str | None = None
 
 
 def fetch_data(
@@ -106,22 +119,58 @@ def fetch_data(
         path.mkdir(parents=True, exist_ok=True)
 
     errors: list[str] = []
+    warnings: list[str] = []
     _emit_progress(progress_callback, "fetch_spot", 0, 0)
     spot = _load_or_fetch_spot(ak, raw_dir / "spot_em.csv", normalized_dir / "spot_all.csv", resume)
-    spot_history_fallbacks = _spot_history_fallbacks(_read_csv(raw_dir / "spot_em.csv"), target)
+    spot_data_dates = _frame_data_dates(spot)
+    spot_matches_target = _frame_dates_match_target(spot, target)
+    candidate_source = "target_spot"
+    candidate_source_date: str | None = data_date
+    if not spot_matches_target:
+        candidate_source = "unknown"
+        candidate_source_date = None
+        warnings.append(
+            f"spot snapshot date mismatch: target {data_date}, spot dates {spot_data_dates or ['unknown']}; "
+            "disabled spot-derived liquidity/share/history fallbacks"
+        )
+    spot_history_fallbacks = _spot_history_fallbacks(_read_csv(raw_dir / "spot_em.csv"), target) if spot_matches_target else {}
     requested_codes = {str(code).zfill(6) for code in codes or []}
     cached_candidates = _read_valid_candidates(normalized_dir / "spot_candidates.csv") if resume else None
+    if cached_candidates is not None and not _frame_dates_match_target(cached_candidates, target):
+        cached_candidates = None
     if cached_candidates is not None and not requested_codes and limit is None:
         candidates = _revalidate_cached_candidates(cached_candidates)
+        candidate_source = "cached_target_candidates"
+        candidate_source_date = data_date
         if len(candidates) != len(cached_candidates) or not candidates.equals(cached_candidates.reset_index(drop=True)):
             _write_csv(candidates, normalized_dir / "spot_candidates.csv")
     elif requested_codes:
         candidates = spot[spot["code"].isin(requested_codes)].copy()
         candidates["is_equity_etf"] = True
         candidates["universe_reason"] = "requested_code"
+        candidate_source = "requested_codes"
+        candidate_source_date = data_date if spot_matches_target else None
+        if not spot_matches_target:
+            candidates = _without_spot_derived_metrics(candidates)
     else:
-        candidates = filter_equity_etfs(spot)
-        candidates = _prefilter_liquid_candidates(candidates)
+        if spot_matches_target:
+            candidates = filter_equity_etfs(spot)
+            candidates = _prefilter_liquid_candidates(candidates)
+            candidate_source = "target_spot_liquidity"
+            candidate_source_date = data_date
+        else:
+            previous_snapshot = _latest_previous_candidates(root, data_date)
+            if previous_snapshot is not None:
+                previous_date, previous_candidates = previous_snapshot
+                candidates = _without_spot_derived_metrics(filter_equity_etfs(previous_candidates))
+                candidate_source = "previous_candidates"
+                candidate_source_date = previous_date
+                warnings.append(f"using {previous_date} candidate universe because target-day spot snapshot is unavailable")
+            else:
+                candidates = _without_spot_derived_metrics(filter_equity_etfs(spot))
+                candidate_source = "spot_universe_without_current_metrics"
+                candidate_source_date = None
+                warnings.append("no previous candidate universe found; using spot code/name universe without current-day metrics")
     if cached_candidates is None or requested_codes or limit is not None:
         if limit:
             candidates = candidates.head(limit).copy()
@@ -226,12 +275,18 @@ def fetch_data(
         "history_provider_counts": _counts(item.provider or "unknown" for item in history_outcomes),
         "history_latest_date_counts": _counts(item.latest_date or "missing" for item in history_outcomes),
         "history_outcomes": [asdict(item) for item in sorted(history_outcomes, key=lambda item: item.code)],
+        "spot_data_dates": spot_data_dates,
+        "spot_data_matches_target": bool(spot_matches_target),
+        "spot_derived_metrics_enabled": bool(spot_matches_target),
+        "candidate_source": candidate_source,
+        "candidate_source_date": candidate_source_date,
         "skipped_cached": int(skipped_cached),
         "fetched_history_files": int(fetched),
         "history_errors": int(history_errors),
         "resume": bool(resume),
         "max_workers": int(workers),
         "errors": errors,
+        "warnings": warnings,
         "source": "akshare",
     }
     _write_json(report, normalized_dir / "fetch_report.json")
@@ -314,12 +369,13 @@ def _load_or_fetch_history(
         if cached_meta is not None:
             rows, latest_date = cached_meta
             if latest_date == target.date().isoformat():
+                cached_source = _history_source_from_path(normalized_path) or "cache_normalized"
                 return HistoryFetchOutcome(
                     code=code,
                     name=name,
                     status="cached",
                     rows=rows,
-                    provider="cache_normalized",
+                    provider=cached_source,
                     latest_date=latest_date,
                     stale=False,
                 )
@@ -334,12 +390,16 @@ def _load_or_fetch_history(
                     provider="spot_fallback",
                     latest_date=latest_date,
                     stale=False,
+                    primary_provider="eastmoney",
+                    primary_error="cached normalized history is stale; patched from current spot snapshot before primary refetch",
+                    fallback_provider="spot_fallback",
                 )
 
         raw_history = _read_csv(raw_path)
         if raw_history is not None:
             try:
-                history = normalize_history(raw_history, code)
+                raw_source = _history_source_from_frame(raw_history) or "cache_raw"
+                history = _with_history_source(normalize_history(raw_history, code), raw_source)
                 cached_meta = _valid_history_metadata(history, target)
                 if cached_meta is not None:
                     rows, latest_date = cached_meta
@@ -350,7 +410,7 @@ def _load_or_fetch_history(
                             name=name,
                             status="cached",
                             rows=rows,
-                            provider="cache_raw",
+                            provider=raw_source,
                             latest_date=latest_date,
                             stale=False,
                         )
@@ -365,14 +425,21 @@ def _load_or_fetch_history(
                             provider="spot_fallback",
                             latest_date=latest_date,
                             stale=False,
+                            primary_provider="eastmoney",
+                            primary_error="cached raw history is stale; patched from current spot snapshot before primary refetch",
+                            fallback_provider="spot_fallback",
                         )
             except Exception:
                 pass
 
     try:
-        raw_history, provider = _fetch_history_with_provider(ak, code, history_start, target_ymd)
+        raw_history, provider, primary_error, fallback_error = _fetch_history_with_attempt_details(
+            ak, code, history_start, target_ymd
+        )
+        raw_history = raw_history.copy()
+        raw_history["history_source"] = provider
         _write_csv(raw_history, raw_path)
-        history = normalize_history(raw_history, code)
+        history = _with_history_source(normalize_history(raw_history, code), provider)
         meta = _valid_history_metadata(history, target)
         if meta is None:
             spot_meta = _write_history_with_spot_fallback(None, spot_history, normalized_path, target)
@@ -386,6 +453,9 @@ def _load_or_fetch_history(
                     provider="spot_fallback",
                     latest_date=latest_date,
                     stale=False,
+                    primary_provider="eastmoney",
+                    primary_error=primary_error,
+                    fallback_provider="spot_fallback",
                 )
             return HistoryFetchOutcome(code=code, name=name, status="error", error="empty history")
         rows, latest_date = meta
@@ -411,6 +481,10 @@ def _load_or_fetch_history(
             provider=provider,
             latest_date=latest_date,
             stale=latest_date != target.date().isoformat(),
+            primary_provider=provider if _is_eastmoney_provider(provider) else "eastmoney",
+            primary_error=primary_error,
+            fallback_provider=provider if provider == "sina" else None,
+            fallback_error=fallback_error,
         )
     except Exception as exc:  # noqa: BLE001 - caller records per-code errors
         spot_meta = _write_history_with_spot_fallback(None, spot_history, normalized_path, target)
@@ -424,6 +498,9 @@ def _load_or_fetch_history(
                 provider="spot_fallback",
                 latest_date=latest_date,
                 stale=False,
+                primary_provider="eastmoney",
+                primary_error=str(exc),
+                fallback_provider="spot_fallback",
             )
         return HistoryFetchOutcome(code=code, name=name, status="error", error=str(exc))
 
@@ -451,6 +528,7 @@ def _spot_history_fallbacks(raw_spot: pd.DataFrame | None, target: pd.Timestamp)
             history = normalize_history(pd.DataFrame([row.drop(labels=["_spot_date"], errors="ignore")]), code)
         except Exception:
             continue
+        history["history_source"] = "spot_fallback"
         meta = _valid_history_metadata(history, target)
         if meta is not None and meta[1] == target.date().isoformat():
             fallbacks[code] = history
@@ -465,7 +543,17 @@ def _write_history_with_spot_fallback(
 ) -> tuple[int, str] | None:
     if spot_history is None or spot_history.empty:
         return None
-    frames = [frame for frame in [history, spot_history] if frame is not None and not frame.empty]
+    prepared_frames = []
+    for frame, source in [(history, "unknown"), (spot_history, "spot_fallback")]:
+        if frame is None or frame.empty:
+            continue
+        prepared = frame.copy()
+        if "history_source" not in prepared:
+            prepared["history_source"] = source
+        else:
+            prepared["history_source"] = prepared["history_source"].fillna("").astype(str).replace("", source)
+        prepared_frames.append(prepared)
+    frames = prepared_frames
     if not frames:
         return None
     combined = pd.concat(frames, ignore_index=True)
@@ -479,6 +567,73 @@ def _write_history_with_spot_fallback(
         return None
     _write_csv(combined, normalized_path)
     return meta
+
+
+def _with_history_source(frame: pd.DataFrame, source: str) -> pd.DataFrame:
+    result = frame.copy()
+    result["history_source"] = str(source or "unknown")
+    return result
+
+
+def _history_source_from_path(path: Path) -> str | None:
+    frame = _read_csv(path)
+    if frame is None:
+        return None
+    return _history_source_from_frame(frame)
+
+
+def _history_source_from_frame(frame: pd.DataFrame) -> str | None:
+    if "history_source" not in frame or frame.empty:
+        return None
+    values = frame["history_source"].dropna().astype(str).str.strip()
+    values = values[values != ""]
+    if values.empty:
+        return None
+    if values.eq("spot_fallback").any():
+        return "spot_fallback"
+    return str(values.iloc[-1])
+
+
+def _frame_data_dates(frame: pd.DataFrame | None) -> list[str]:
+    if frame is None or frame.empty or "data_date" not in frame:
+        return []
+    dates = pd.to_datetime(frame["data_date"], errors="coerce").dropna()
+    if dates.empty:
+        return []
+    return sorted({item.date().isoformat() for item in dates})
+
+
+def _frame_dates_match_target(frame: pd.DataFrame | None, target: pd.Timestamp) -> bool:
+    data_dates = _frame_data_dates(frame)
+    return not data_dates or data_dates == [target.date().isoformat()]
+
+
+def _without_spot_derived_metrics(candidates: pd.DataFrame) -> pd.DataFrame:
+    result = candidates.copy()
+    for column in SPOT_DERIVED_COLUMNS:
+        result[column] = pd.NA
+    return result
+
+
+def _latest_previous_candidates(root: Path, data_date: str) -> tuple[str, pd.DataFrame] | None:
+    normalized_root = root / "data" / "normalized"
+    if not normalized_root.exists():
+        return None
+
+    for path in sorted((item for item in normalized_root.iterdir() if item.is_dir()), reverse=True):
+        if path.name >= data_date:
+            continue
+        try:
+            target = pd.Timestamp(path.name)
+        except ValueError:
+            continue
+        candidates = _read_valid_candidates(path / "spot_candidates.csv")
+        if candidates is None or candidates.empty:
+            continue
+        if not _frame_dates_match_target(candidates, target):
+            continue
+        return path.name, candidates
+    return None
 
 
 def _read_csv(path: Path) -> pd.DataFrame | None:
@@ -575,21 +730,35 @@ def _fetch_history(ak: Any, code: str, start_date: str, end_date: str) -> pd.Dat
 
 
 def _fetch_history_with_provider(ak: Any, code: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
+    frame, provider, _primary_error, _fallback_error = _fetch_history_with_attempt_details(ak, code, start_date, end_date)
+    return frame, provider
+
+
+def _fetch_history_with_attempt_details(
+    ak: Any, code: str, start_date: str, end_date: str
+) -> tuple[pd.DataFrame, str, str | None, str | None]:
     errors: list[str] = []
 
     for attempt in range(2):
         try:
-            return _fetch_history_eastmoney_with_provider(code, start_date, end_date)
+            frame, provider = _fetch_history_eastmoney_with_provider(code, start_date, end_date)
+            return frame, provider, None, None
         except Exception as exc:
             errors.append(f"eastmoney[{attempt}]: {exc}")
             time.sleep(0.5)
 
+    primary_error = "; ".join(errors)
     try:
-        return _fetch_history_sina(ak, code, start_date, end_date), "sina"
+        return _fetch_history_sina(ak, code, start_date, end_date), "sina", primary_error, None
     except Exception as exc:
-        errors.append(f"sina: {exc}")
+        fallback_error = f"sina: {exc}"
+        errors.append(fallback_error)
 
     raise RuntimeError(f"All sources exhausted for {code}: {'; '.join(errors[-3:])}")
+
+
+def _is_eastmoney_provider(provider: str | None) -> bool:
+    return str(provider or "").startswith("eastmoney_")
 
 
 def _fetch_history_eastmoney(code: str, start_date: str, end_date: str) -> pd.DataFrame:
