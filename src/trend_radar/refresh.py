@@ -138,7 +138,8 @@ def refresh_latest_data(
 
         try:
             existing_radar = root / "data" / "radar" / f"{target_date}.csv"
-            if existing_radar.exists() and not force:
+            dates_to_refresh = _refresh_date_sequence(root, target_date, force)
+            if not dates_to_refresh:
                 result = RefreshResult(
                     status=REFRESH_SKIPPED,
                     target_date=target_date,
@@ -155,58 +156,76 @@ def refresh_latest_data(
                 _write_status(root, result)
                 return result
 
-            def progress_callback(progress: dict[str, Any]) -> None:
-                phase = str(progress.get("phase") or "fetch_history")
+            score_result = None
+            actual_date = target_date if existing_radar.exists() else None
+            for refresh_date in dates_to_refresh:
+
+                def progress_callback(progress: dict[str, Any], refresh_date: str = refresh_date) -> None:
+                    phase = str(progress.get("phase") or "fetch_history")
+                    _write_status(
+                        root,
+                        RefreshResult(
+                            status=REFRESH_RUNNING,
+                            target_date=target_date,
+                            started_at=started_at,
+                            updated_at=_timestamp(),
+                            phase=phase,
+                            progress=_progress_from_callback(progress),
+                            message=f"正在更新 {refresh_date} 数据",
+                        ),
+                    )
+
+                fetcher(
+                    data_date=refresh_date,
+                    root=root,
+                    progress_callback=progress_callback,
+                    resume=not force,
+                    max_workers=DEFAULT_HISTORY_FETCH_MAX_WORKERS,
+                )
+                actual_date = _detect_complete_history_date(root, refresh_date) or refresh_date
+                source_date = refresh_date if actual_date != refresh_date else None
                 _write_status(
                     root,
                     RefreshResult(
                         status=REFRESH_RUNNING,
                         target_date=target_date,
+                        actual_date=actual_date,
                         started_at=started_at,
                         updated_at=_timestamp(),
-                        phase=phase,
-                        progress=_progress_from_callback(progress),
-                        message=f"正在更新 {target_date} 数据",
+                        phase="score",
+                        progress=_progress_payload(0, 0),
+                        message=f"正在评分 {actual_date} 数据",
                     ),
                 )
+                score_result = scorer(data_date=actual_date, root=root, source_date=source_date)
+                _remove_incomplete_target_outputs(root, refresh_date, actual_date)
+                if refresh_date == target_date:
+                    _promote_latest_from_radar(root, actual_date)
 
-            fetcher(
-                data_date=target_date,
-                root=root,
-                progress_callback=progress_callback,
-                resume=not force,
-                max_workers=DEFAULT_HISTORY_FETCH_MAX_WORKERS,
+            target_refreshed = target_date in dates_to_refresh
+            final_actual_date = (actual_date or target_date) if target_refreshed else target_date
+            final_radar_csv = (
+                Path(score_result.radar_csv)
+                if target_refreshed and score_result
+                else root / "data" / "radar" / f"{final_actual_date}.csv"
             )
-            actual_date = _detect_complete_history_date(root, target_date) or target_date
-            source_date = target_date if actual_date != target_date else None
-            _write_status(
-                root,
-                RefreshResult(
-                    status=REFRESH_RUNNING,
-                    target_date=target_date,
-                    actual_date=actual_date,
-                    started_at=started_at,
-                    updated_at=_timestamp(),
-                    phase="score",
-                    progress=_progress_payload(0, 0),
-                    message=f"正在评分 {actual_date} 数据",
-                ),
+            final_radar_json = (
+                Path(score_result.radar_json)
+                if target_refreshed and score_result
+                else root / "data" / "radar" / f"{final_actual_date}.json"
             )
-            score_result = scorer(data_date=actual_date, root=root, source_date=source_date)
-            _remove_incomplete_target_outputs(root, target_date, actual_date)
-            _promote_latest_from_radar(root, actual_date)
             result = RefreshResult(
                 status=REFRESH_SUCCEEDED,
                 target_date=target_date,
-                actual_date=actual_date,
+                actual_date=final_actual_date,
                 started_at=started_at,
                 finished_at=_timestamp(),
                 updated_at=_timestamp(),
-                generated_at=_read_radar_generated_at(root, actual_date),
-                radar_csv=Path(score_result.radar_csv),
-                radar_json=Path(score_result.radar_json),
+                generated_at=_read_radar_generated_at(root, final_actual_date),
+                radar_csv=final_radar_csv,
+                radar_json=final_radar_json,
                 phase="done",
-                message=_success_message(target_date, actual_date),
+                message=_refresh_success_message(target_date, final_actual_date, dates_to_refresh),
             )
             _write_status(root, result)
             return result
@@ -547,6 +566,42 @@ def _previous_weekday(value: date) -> date:
     return current
 
 
+def _refresh_date_sequence(root: Path, target_date: str, force: bool) -> list[str]:
+    dates = _missing_weekday_radar_dates(root, target_date)
+    target_radar = root / "data" / "radar" / f"{target_date}.csv"
+    if force or not target_radar.exists():
+        dates.append(target_date)
+    return list(dict.fromkeys(dates))
+
+
+def _missing_weekday_radar_dates(root: Path, target_date: str) -> list[str]:
+    target = date.fromisoformat(target_date)
+    radar_dir = root / "data" / "radar"
+    if not radar_dir.exists():
+        return []
+
+    existing_dates: set[date] = set()
+    for path in radar_dir.glob("*.csv"):
+        try:
+            data_date = date.fromisoformat(path.stem)
+        except ValueError:
+            continue
+        if data_date <= target:
+            existing_dates.add(data_date)
+
+    previous_dates = [data_date for data_date in existing_dates if data_date < target]
+    if not previous_dates:
+        return []
+
+    missing: list[str] = []
+    current = max(previous_dates) + timedelta(days=1)
+    while current <= target:
+        if current.weekday() < 5 and current not in existing_dates:
+            missing.append(current.isoformat())
+        current = current + timedelta(days=1)
+    return missing
+
+
 def _detect_complete_history_date(
     root: Path,
     source_date: str,
@@ -756,6 +811,15 @@ def _result_from_payload(payload: dict[str, Any], fallback_target_date: str) -> 
         phase=_optional_str(payload.get("phase")),
         progress=_optional_progress(payload.get("progress")),
     )
+
+
+def _refresh_success_message(target_date: str, actual_date: str, refreshed_dates: list[str]) -> str:
+    target_refreshed = target_date in refreshed_dates
+    base = _success_message(target_date, actual_date) if target_refreshed else f"当前已是最新 {target_date} 数据"
+    gap_dates = [data_date for data_date in refreshed_dates if data_date != target_date]
+    if not gap_dates:
+        return base
+    return f"已补齐 {len(gap_dates)} 个缺失日期：{', '.join(gap_dates)}；{base}"
 
 
 def _success_message(target_date: str, actual_date: str) -> str:

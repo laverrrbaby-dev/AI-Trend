@@ -59,6 +59,63 @@ class RefreshTests(unittest.TestCase):
             self.assertEqual(status["status"], REFRESH_SKIPPED)
             self.assertEqual(status["generated_at"], "2026-05-29 16:00:00")
 
+    def test_missing_weekday_gap_is_backfilled_before_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            self._write_radar(root, "2026-06-04")
+            calls: list[tuple[str, str, str | None]] = []
+
+            def fake_fetcher(data_date: str, root: Path, **kwargs: object) -> object:
+                calls.append(("fetch", data_date, None))
+                self._write_history(root, data_date, data_date)
+                return SimpleNamespace(data_date=data_date)
+
+            def fake_scorer(data_date: str, root: Path, source_date: str | None = None) -> object:
+                calls.append(("score", data_date, source_date))
+                return self._write_radar(root, data_date, source_date=source_date)
+
+            now = datetime(2026, 6, 8, 16, 0, tzinfo=ASIA_SHANGHAI)
+            result = refresh_latest_data(root=root, now=now, fetcher=fake_fetcher, scorer=fake_scorer)
+
+            self.assertEqual(result.status, REFRESH_SUCCEEDED)
+            self.assertEqual(result.actual_date, "2026-06-08")
+            self.assertEqual(
+                calls,
+                [
+                    ("fetch", "2026-06-05", None),
+                    ("score", "2026-06-05", None),
+                    ("fetch", "2026-06-08", None),
+                    ("score", "2026-06-08", None),
+                ],
+            )
+            self.assertTrue((root / "data" / "radar" / "2026-06-05.csv").exists())
+            self.assertIn("已补齐 1 个缺失日期：2026-06-05", result.message or "")
+
+    def test_existing_target_still_backfills_missing_weekday_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            self._write_radar(root, "2026-06-04")
+            self._write_radar(root, "2026-06-08")
+            calls: list[tuple[str, str, str | None]] = []
+
+            def fake_fetcher(data_date: str, root: Path, **kwargs: object) -> object:
+                calls.append(("fetch", data_date, None))
+                self._write_history(root, data_date, data_date)
+                return SimpleNamespace(data_date=data_date)
+
+            def fake_scorer(data_date: str, root: Path, source_date: str | None = None) -> object:
+                calls.append(("score", data_date, source_date))
+                return self._write_radar(root, data_date, source_date=source_date)
+
+            now = datetime(2026, 6, 8, 16, 0, tzinfo=ASIA_SHANGHAI)
+            result = refresh_latest_data(root=root, now=now, fetcher=fake_fetcher, scorer=fake_scorer)
+
+            self.assertEqual(result.status, REFRESH_SUCCEEDED)
+            self.assertEqual(result.actual_date, "2026-06-08")
+            self.assertEqual(calls, [("fetch", "2026-06-05", None), ("score", "2026-06-05", None)])
+            self.assertEqual(result.radar_csv, root / "data" / "radar" / "2026-06-08.csv")
+            self.assertIn("当前已是最新 2026-06-08 数据", result.message or "")
+
     def test_missing_target_fetches_then_scores_and_writes_success(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
