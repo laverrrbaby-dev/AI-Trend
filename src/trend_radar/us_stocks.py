@@ -31,7 +31,7 @@ US_REFRESH_SKIPPED = "skipped"
 
 TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
 NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=8000&offset=0&download=true"
-US_TOP_TURNOVER_LIMIT = 20
+US_TOP_TURNOVER_LIMIT = 30
 US_NAME_MAP_FILE = "name_map.csv"
 US_STOCK_COLUMNS = ["代码", "名称", "英文名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"]
 
@@ -318,7 +318,7 @@ def refresh_us_stock_turnover(
         metadata_json=metadata_json,
         source=str(metadata["source"]),
         row_count=len(frame),
-        message=f"已生成 {target_date} 美股成交额 Top20",
+        message=f"已生成 {target_date} 美股成交额 Top{US_TOP_TURNOVER_LIMIT}",
     )
     _write_status(root, result)
     return result

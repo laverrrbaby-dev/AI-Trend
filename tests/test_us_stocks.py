@@ -21,6 +21,7 @@ from trend_radar.us_stocks import (  # noqa: E402
     US_REFRESH_FAILED,
     US_REFRESH_SKIPPED,
     US_REFRESH_SUCCEEDED,
+    US_TOP_TURNOVER_LIMIT,
     fetch_us_top_turnover,
     latest_us_stock_cache_date,
     load_us_name_map,
@@ -53,7 +54,7 @@ class UsStocksTests(unittest.TestCase):
             self.assertEqual(calls[0][0], TRADINGVIEW_SCANNER_URL)
             self.assertEqual(calls[0][1]["sort"], {"sortBy": "Value.Traded", "sortOrder": "desc"})
             self.assertEqual(metadata["source"], "tradingview")
-            self.assertEqual(len(frame), 20)
+            self.assertEqual(len(frame), US_TOP_TURNOVER_LIMIT)
             self.assertNotIn("PREF", frame["代码"].tolist())
             self.assertTrue(frame["成交额"].is_monotonic_decreasing)
             mu = frame[frame["代码"] == "MU"].iloc[0]
@@ -109,7 +110,7 @@ class UsStocksTests(unittest.TestCase):
             self.assertEqual(calls, [TRADINGVIEW_SCANNER_URL])
             snapshot = load_us_stock_snapshot("2026-06-03", root=root)
             self.assertEqual(snapshot.columns[:8].tolist(), ["代码", "名称", "英文名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"])
-            self.assertEqual(len(snapshot), 20)
+            self.assertEqual(len(snapshot), US_TOP_TURNOVER_LIMIT)
             metadata = load_us_stock_metadata("2026-06-03", root=root)
             self.assertEqual(metadata["source"], "tradingview")
             self.assertIn("MISS", metadata["missing_cn_name_codes"])
@@ -135,7 +136,7 @@ class UsStocksTests(unittest.TestCase):
             self.assertEqual(metadata["provider"], "nasdaq_screener_download")
             self.assertEqual(metadata["turnover_method"], "lastsale_x_volume")
             self.assertIn("tradingview: tradingview down", metadata["fallback_errors"])
-            self.assertEqual(len(frame), 20)
+            self.assertEqual(len(frame), US_TOP_TURNOVER_LIMIT)
             self.assertNotIn("WARR", frame["代码"].tolist())
             mu = frame[frame["代码"] == "MU"].iloc[0]
             self.assertEqual(mu["名称"], "美光科技")
@@ -211,7 +212,7 @@ class UsStocksTests(unittest.TestCase):
 
             self.assertEqual(calls, 2)
             sleep_mock.assert_called_once()
-            self.assertEqual(len(frame), 20)
+            self.assertEqual(len(frame), US_TOP_TURNOVER_LIMIT)
             self.assertEqual(metadata["source"], "tradingview")
 
 
@@ -222,7 +223,7 @@ def _tradingview_rows() -> list[dict[str, object]]:
         _tv_row("XYZ", "Mapped Stock Inc.", ["common"], 50.0, 1.0, 0.5, 8_500_000_000.0, 100_000_000_000.0),
         _tv_row("MISS", "Missing Chinese Name Inc.", ["common"], 40.0, -1.0, -0.4, 8_000_000_000.0, 90_000_000_000.0),
     ]
-    for index in range(25):
+    for index in range(35):
         rows.append(
             _tv_row(
                 f"STK{index:02d}",
@@ -244,7 +245,7 @@ def _nasdaq_rows() -> list[dict[str, object]]:
         _nasdaq_row("MU", "Micron Technology Inc. Common Stock", "$10.00", "0.27", "2.76%", "900000000", "1200000000000"),
         _nasdaq_row("XYZ", "Mapped Stock Inc. Common Stock", "$50.00", "0.50", "1.0%", "170000000", "100000000000"),
     ]
-    for index in range(25):
+    for index in range(35):
         rows.append(
             _nasdaq_row(
                 f"STK{index:02d}",
@@ -338,10 +339,10 @@ def _write_cached_snapshot(root: Path, data_date: str) -> None:
                 "最新价": 100.0 + i,
                 "涨跌幅": 1.0,
                 "涨跌额": 1.0,
-                "成交额": (20 - i) * 100_000_000.0,
+                "成交额": (US_TOP_TURNOVER_LIMIT - i) * 100_000_000.0,
                 "市值": 1000000000.0 + i,
             }
-            for i in range(20)
+            for i in range(US_TOP_TURNOVER_LIMIT)
         ]
     ).to_csv(cache_dir / f"{data_date}.csv", index=False)
     (cache_dir / f"{data_date}.json").write_text(
