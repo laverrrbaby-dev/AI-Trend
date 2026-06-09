@@ -21,6 +21,7 @@ from trend_radar.us_stocks import (  # noqa: E402
     US_REFRESH_FAILED,
     US_REFRESH_SKIPPED,
     US_REFRESH_SUCCEEDED,
+    US_CN_NAME_SEED,
     US_TOP_TURNOVER_LIMIT,
     fetch_us_top_turnover,
     latest_us_stock_cache_date,
@@ -76,6 +77,40 @@ class UsStocksTests(unittest.TestCase):
             self.assertEqual(mapping["MU"], "缓存美光")
             self.assertEqual(mapping["ABC"], "缓存ABC")
             self.assertEqual(mapping["NVDA"], "英伟达")
+
+    def test_seed_localizes_recent_top_turnover_names(self) -> None:
+        expected_names = {
+            "AAOI": "应用光电",
+            "AMAT": "应用材料",
+            "ARM": "安谋控股",
+            "ASML": "阿斯麦",
+            "BRK.B": "伯克希尔哈撒韦-B",
+            "CRWD": "众击",
+            "INHD": "英诺控股",
+            "KLAC": "科磊",
+            "LITE": "鲁门特姆",
+            "LLY": "礼来",
+            "LRCX": "泛林集团",
+            "META": "脸书母公司",
+            "MSTR": "策略公司（原微策略）",
+            "NBIS": "涅比乌斯集团",
+            "PLTR": "帕兰蒂尔",
+            "UNH": "联合健康",
+            "WDC": "西部数据",
+        }
+
+        for code, expected_name in expected_names.items():
+            with self.subTest(code=code):
+                self.assertEqual(US_CN_NAME_SEED[code], expected_name)
+
+    def test_seed_names_are_not_pure_english(self) -> None:
+        untranslated_codes = [
+            code
+            for code, name in US_CN_NAME_SEED.items()
+            if not any("\u3400" <= character <= "\u9fff" for character in name)
+        ]
+
+        self.assertEqual(untranslated_codes, [])
 
     def test_load_snapshot_applies_chinese_names_to_legacy_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
