@@ -607,7 +607,7 @@ def _install_code_copy_handler() -> None:
           parentDocument.__trendRadarCodeCopyAbort = abortController;
           parentDocument.__trendRadarCodeCopyInstalled = true;
 
-          const codePattern = /^\\d{6}$/;
+          const codePattern = /^(?:\\d{6}|[A-Z][A-Z0-9]{0,5}(?:[.-][A-Z0-9]{1,2})?)$/;
           const editorSelector = "textarea.gdg-input, input.gdg-input";
           const editorOverlaySelector = ".gdg-style.gdg-pad, .gdg-clip-region";
           const toastId = "trend-code-copy-toast";
@@ -798,14 +798,14 @@ def _install_code_copy_handler() -> None:
           parentDocument.addEventListener(
             "dblclick",
             (event) => {
-              const code =
-                codeFromEditor(event.target) ||
-                selectedCodeFromFrameIndex(dataFrameIndexFromTarget(event.target)) ||
-                selectedCodeFromText();
-              if (!code) {
-                return;
-              }
-              copyCode(code);
+              const frameIndex = dataFrameIndexFromTarget(event.target);
+              const editorCode = codeFromEditor(event.target);
+              parentWindow.setTimeout(() => {
+                const code = editorCode || selectedCodeFromFrameIndex(frameIndex) || selectedCodeFromText();
+                if (code) {
+                  copyCode(code);
+                }
+              }, 80);
             },
             {
               capture: true,
