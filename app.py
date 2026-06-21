@@ -39,13 +39,51 @@ from trend_radar.refresh import (  # noqa: E402
     refresh_latest_data,
     refresh_task_is_active,
     retry_problem_snapshots,
+    retry_selected_date,
     resolve_refresh_target_date,
+)
+from trend_radar.crypto import (  # noqa: E402
+    CRYPTO_REFRESH_FAILED,
+    CRYPTO_REFRESH_IDLE,
+    CRYPTO_REFRESH_RUNNING,
+    CRYPTO_REFRESH_SKIPPED,
+    CRYPTO_REFRESH_SUCCEEDED,
+    CRYPTO_TOP_TURNOVER_LIMIT,
+    CRYPTO_WINDOW_DAYS,
+    get_available_crypto_dates,
+    latest_crypto_cache_date,
+    load_crypto_metadata,
+    load_crypto_snapshot,
+    read_crypto_refresh_status,
+    refresh_crypto_turnover,
+    resolve_crypto_target_date,
+)
+from trend_radar.us_stocks import (  # noqa: E402
+    US_REFRESH_FAILED,
+    US_REFRESH_IDLE,
+    US_REFRESH_RUNNING,
+    US_REFRESH_SKIPPED,
+    US_REFRESH_SUCCEEDED,
+    US_TOP_TURNOVER_LIMIT,
+    get_available_us_stock_dates,
+    latest_us_stock_cache_date,
+    load_us_stock_metadata,
+    load_us_stock_snapshot,
+    read_us_stock_refresh_status,
+    refresh_us_stock_turnover,
+    resolve_us_stock_target_date,
 )
 
 
 STATUS_ORDER = ["强趋势", "趋势向上", "转强观察", "震荡观察", "弱观察", "数据不足"]
+MARKET_OPTIONS = ["A股ETF", "美股", "币圈现货"]
 DATE_SELECT_KEY = "selected_data_date"
 PENDING_DATE_SELECT_KEY = "pending_selected_data_date"
+MARKET_SELECT_KEY = "selected_market_tag"
+US_STOCK_DATE_SELECT_KEY = "selected_us_stock_date"
+PENDING_US_STOCK_DATE_SELECT_KEY = "pending_selected_us_stock_date"
+CRYPTO_DATE_SELECT_KEY = "selected_crypto_date"
+PENDING_CRYPTO_DATE_SELECT_KEY = "pending_selected_crypto_date"
 DETAIL_CODE_STATE_KEY = "detail_selected_code"
 TOP10_SELECTION_STATE_KEY = "top10_selection_signature"
 RANKING_SELECTION_STATE_KEY = "ranking_selection_signature"
@@ -81,7 +119,11 @@ TERM_HELP = {
     "5日份额变化": "ETF 最新份额相对 5 个交易日前的变化比例，用来观察短期份额流入或流出。",
     "20日份额变化": "ETF 最新份额相对 20 个交易日前的变化比例，用来观察中期份额流入或流出。",
     "成交额(亿)": "最新交易日成交额，单位为亿元。",
-    "数据质量": "当前 ETF 行的数据完整性提示。完整表示关键行情和份额数据可用；其他状态表示存在低置信度或日期滞后等情况。",
+    "数据质量": "当前 ETF 行的数据完整性提示。完整仅表示历史行情、份额和关键字段来源可信；fallback 或来源未记录必须复核。",
+    "数据置信度": "高表示关键数据来源可信；中表示存在份额、市值或K线兜底；低表示历史行情来自实时快照补点或来源无法确认。",
+    "行情来源": "当前 ETF 历史行情的来源。实时行情补点和来源未记录都需要重新拉取确认。",
+    "份额来源": "当前 ETF 份额历史来源。实时行情份额表示官方份额接口缺失时的兜底。",
+    "数据问题": "当前 ETF 的具体数据风险和建议动作；无表示未发现低置信来源或关键字段兜底。",
     "份额变化": "展示 5 日和 20 日 ETF 份额变化比例，正值表示份额增加，负值表示份额减少。",
     "成交额热度": "由近 20 日 Top30 驻留、最新成交额排名、近 5 日相对近 20 日成交额放大共同组成。",
     "份额流入": "由近 5 日、近 20 日份额变化构成；价格上涨且份额增加会加分。",
@@ -101,6 +143,25 @@ def main() -> None:
     _install_code_copy_handler()
     _install_lifecycle_heartbeat()
 
+    market = _market_selector()
+    if market == "美股":
+        _render_us_stock_turnover_page()
+    elif market == "币圈现货":
+        _render_crypto_turnover_page()
+    else:
+        _render_a_share_etf_page()
+
+
+def _market_selector() -> str:
+    options = MARKET_OPTIONS
+    if hasattr(st, "segmented_control"):
+        selected = st.segmented_control("市场", options, default=options[0], key=MARKET_SELECT_KEY)
+    else:
+        selected = st.radio("市场", options, index=0, horizontal=True, key=MARKET_SELECT_KEY)
+    return str(selected or options[0])
+
+
+def _render_a_share_etf_page() -> None:
     dates = get_available_dates()
     _apply_pending_selected_date(dates)
     refresh_target_date = resolve_refresh_target_date()
@@ -129,7 +190,7 @@ def main() -> None:
     top10 = snapshot.head(10).copy()
 
     _render_summary_metrics(snapshot, changes)
-    _render_data_quality(meta)
+    _render_data_quality(meta, snapshot)
 
     filter_cols = st.columns([0.86, 1.1, 0.78], vertical_alignment="bottom")
     with filter_cols[0]:
@@ -235,6 +296,344 @@ def _start_retry_thread() -> None:
     thread.start()
 
 
+def _start_retry_selected_thread(data_date: str) -> None:
+    thread = threading.Thread(
+        target=retry_selected_date,
+        kwargs={"data_date": data_date},
+        name=f"trend-radar-retry-{data_date}",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _start_us_stock_auto_refresh_once(target_date: str) -> bool:
+    if target_date in get_available_us_stock_dates():
+        return False
+    key = f"us_stock_auto_refresh_started_{target_date}"
+    if st.session_state.get(key):
+        return read_us_stock_refresh_status().get("status") == US_REFRESH_RUNNING
+    st.session_state[key] = True
+    _start_us_stock_refresh_thread(force=False)
+    return True
+
+
+def _start_us_stock_refresh_thread(force: bool) -> None:
+    thread = threading.Thread(
+        target=refresh_us_stock_turnover,
+        kwargs={"force": force},
+        name="trend-radar-us-stock-refresh",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _render_us_stock_turnover_page() -> None:
+    target_date = resolve_us_stock_target_date()
+    refresh_started = _start_us_stock_auto_refresh_once(target_date)
+    available_dates = get_available_us_stock_dates()
+    _apply_pending_us_stock_selected_date(available_dates)
+    status = read_us_stock_refresh_status()
+    default_display_date = _resolve_us_stock_display_date(target_date, available_dates, status)
+    selected_default = _ensure_us_stock_selected_date(available_dates, default_display_date)
+    date_options = available_dates if available_dates else [selected_default]
+    default_index = date_options.index(selected_default) if selected_default in date_options else len(date_options) - 1
+    display_date = selected_default
+    snapshot = load_us_stock_snapshot(display_date) if display_date in available_dates else pd.DataFrame()
+    metadata = load_us_stock_metadata(display_date) if display_date in available_dates else {}
+
+    header_left, header_date, header_status = st.columns([1.5, 0.58, 0.9], vertical_alignment="center")
+    with header_left:
+        st.title(f"美股成交额Top{US_TOP_TURNOVER_LIMIT}")
+        st.caption("TradingView 直接成交额 | 本地历史快照 | 不含交易建议")
+    with header_date:
+        display_date = st.selectbox("数据日期", date_options, index=default_index, key=US_STOCK_DATE_SELECT_KEY)
+        snapshot = load_us_stock_snapshot(display_date) if display_date in available_dates else pd.DataFrame()
+        metadata = load_us_stock_metadata(display_date) if display_date in available_dates else {}
+    with header_status:
+        source = str(metadata.get("source") or status.get("source") or "tradingview")
+        source_label = "TradingView" if source == "tradingview" else source
+        generated_at = str(metadata.get("generated_at") or status.get("generated_at") or "-")
+        st.metric("数据状态", f"{source_label} {len(snapshot) or '-'}只", f"日期 {display_date} | 生成 {generated_at}")
+
+    _render_us_stock_refresh_status(display_date, target_date, force_poll=refresh_started)
+
+    if snapshot.empty:
+        st.warning("暂无可展示的美股成交额缓存，正在尝试拉取最新数据。")
+        return
+
+    st.dataframe(
+        _display_us_stock_table(snapshot),
+        width="stretch",
+        hide_index=True,
+        height=35 * (len(snapshot) + 1) + 20,
+        column_config=_us_stock_table_columns(),
+    )
+
+
+def _resolve_us_stock_display_date(target_date: str, available_dates: list[str], status: dict[str, Any]) -> str:
+    if target_date in available_dates:
+        return target_date
+    actual_date = str(status.get("actual_date") or "")
+    if actual_date in available_dates:
+        return actual_date
+    latest_date = latest_us_stock_cache_date()
+    return latest_date or target_date
+
+
+def _ensure_us_stock_selected_date(dates: list[str], default_date: str) -> str:
+    if not dates:
+        return default_date
+    selected = st.session_state.get(US_STOCK_DATE_SELECT_KEY)
+    if selected not in dates:
+        selected = default_date if default_date in dates else dates[-1]
+        st.session_state[US_STOCK_DATE_SELECT_KEY] = selected
+    return str(selected)
+
+
+def _apply_pending_us_stock_selected_date(dates: list[str]) -> None:
+    pending = st.session_state.pop(PENDING_US_STOCK_DATE_SELECT_KEY, None)
+    if pending in dates:
+        st.session_state[US_STOCK_DATE_SELECT_KEY] = pending
+
+
+def _render_us_stock_refresh_status(display_date: str, target_date: str, force_poll: bool = False) -> None:
+    should_poll = force_poll or read_us_stock_refresh_status().get("status") == US_REFRESH_RUNNING
+    if hasattr(st, "fragment") and should_poll:
+
+        @st.fragment(run_every="5s")
+        def _us_stock_refresh_fragment() -> None:
+            _render_us_stock_refresh_status_panel(display_date, target_date)
+
+        _us_stock_refresh_fragment()
+        return
+
+    _render_us_stock_refresh_status_panel(display_date, target_date)
+
+
+def _render_us_stock_refresh_status_panel(display_date: str, target_date: str) -> None:
+    status = read_us_stock_refresh_status()
+    status_name = str(status.get("status") or US_REFRESH_IDLE)
+    message = _us_stock_status_message(status, display_date, target_date)
+    notice_col, latest_col, check_col = st.columns([1.48, 0.34, 0.34], vertical_alignment="center")
+    with notice_col:
+        if status_name == US_REFRESH_SUCCEEDED:
+            st.success(message)
+        elif status_name == US_REFRESH_FAILED:
+            if display_date and display_date != target_date:
+                st.warning(message)
+            else:
+                st.error(message)
+        elif status_name in {US_REFRESH_RUNNING, US_REFRESH_SKIPPED}:
+            st.info(message)
+        else:
+            st.info(message)
+        updated_at = str(status.get("updated_at") or "").strip()
+        if updated_at:
+            st.caption(f"最近更新 {updated_at}")
+    with latest_col:
+        if target_date in get_available_us_stock_dates() and display_date != target_date:
+            if st.button("刷新到最新数据", key="refresh-us-stock-to-latest", use_container_width=True):
+                st.session_state[PENDING_US_STOCK_DATE_SELECT_KEY] = target_date
+                st.rerun()
+    with check_col:
+        if st.button(
+            "检查最新数据",
+            key="check-us-stock-latest-data",
+            disabled=status_name == US_REFRESH_RUNNING,
+            use_container_width=True,
+        ):
+            _start_us_stock_refresh_thread(force=True)
+            st.rerun()
+
+
+def _us_stock_status_message(status: dict[str, Any], display_date: str, target_date: str) -> str:
+    status_name = str(status.get("status") or US_REFRESH_IDLE)
+    if status_name == US_REFRESH_RUNNING:
+        return f"正在更新美股成交额 {target_date} 数据..."
+    if status_name == US_REFRESH_SUCCEEDED:
+        return str(status.get("message") or f"已生成 {target_date} 美股成交额 Top{US_TOP_TURNOVER_LIMIT}")
+    if status_name == US_REFRESH_FAILED:
+        base = str(status.get("message") or f"{target_date} 美股成交额更新失败")
+        error = str(status.get("error") or "").strip()
+        suffix = f"：{_short_error(error)}" if error else ""
+        return f"{base}{suffix}"
+    if status_name == US_REFRESH_SKIPPED:
+        return str(status.get("message") or f"当前已是最新美股成交额 {target_date} 数据")
+    if display_date and display_date != target_date:
+        return f"当前展示 {display_date} 美股成交额缓存，目标日期 {target_date} 尚未生成"
+    return "等待检查美股最新数据"
+
+
+def _start_crypto_auto_refresh_once(target_date: str) -> bool:
+    if target_date in get_available_crypto_dates():
+        return False
+    key = f"crypto_auto_refresh_started_{target_date}"
+    if st.session_state.get(key):
+        return read_crypto_refresh_status().get("status") == CRYPTO_REFRESH_RUNNING
+    st.session_state[key] = True
+    _start_crypto_refresh_thread(force=False)
+    return True
+
+
+def _start_crypto_refresh_thread(force: bool) -> None:
+    thread = threading.Thread(
+        target=refresh_crypto_turnover,
+        kwargs={"force": force},
+        name="trend-radar-crypto-refresh",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _render_crypto_turnover_page() -> None:
+    target_date = resolve_crypto_target_date()
+    refresh_started = _start_crypto_auto_refresh_once(target_date)
+    available_dates = get_available_crypto_dates()
+    _apply_pending_crypto_selected_date(available_dates)
+    status = read_crypto_refresh_status()
+    default_display_date = _resolve_crypto_display_date(target_date, available_dates, status)
+    selected_default = _ensure_crypto_selected_date(available_dates, default_display_date)
+    date_options = available_dates if available_dates else [selected_default]
+    default_index = date_options.index(selected_default) if selected_default in date_options else len(date_options) - 1
+    display_date = selected_default
+    snapshot = load_crypto_snapshot(display_date) if display_date in available_dates else pd.DataFrame()
+    metadata = load_crypto_metadata(display_date) if display_date in available_dates else {}
+
+    header_left, header_date, header_status = st.columns([1.45, 0.58, 0.92], vertical_alignment="center")
+    with header_left:
+        st.title(f"加密货币{CRYPTO_WINDOW_DAYS}日成交额Top{CRYPTO_TOP_TURNOVER_LIMIT}")
+        st.caption("多交易所现货成交额聚合 | USD系报价近似等值 | 不含交易建议")
+    with header_date:
+        display_date = st.selectbox("数据日期", date_options, index=default_index, key=CRYPTO_DATE_SELECT_KEY)
+        snapshot = load_crypto_snapshot(display_date) if display_date in available_dates else pd.DataFrame()
+        metadata = load_crypto_metadata(display_date) if display_date in available_dates else {}
+    with header_status:
+        success_count = len(metadata.get("successful_exchanges") or [])
+        failed_count = len(metadata.get("failed_exchanges") or [])
+        source_count = success_count + failed_count or 5
+        generated_at = str(metadata.get("generated_at") or status.get("generated_at") or "-")
+        window_start = str(metadata.get("window_start") or "-")
+        window_end = str(metadata.get("window_end") or display_date)
+        st.metric(
+            "数据状态",
+            f"{success_count or '-'} / {source_count}源 {len(snapshot) or '-'}币",
+            f"窗口 {window_start} 至 {window_end} | 生成 {generated_at}",
+        )
+
+    _render_crypto_refresh_status(display_date, target_date, force_poll=refresh_started)
+
+    if snapshot.empty:
+        st.warning("暂无可展示的币圈现货成交额缓存，正在尝试拉取最新数据。")
+        return
+
+    if metadata.get("partial"):
+        failed = metadata.get("failed_exchanges") or []
+        failed_names = "、".join(str(item.get("exchange")) for item in failed if isinstance(item, dict))
+        st.warning(f"本次为部分数据源结果，失败数据源：{failed_names or '未记录'}。")
+
+    st.dataframe(
+        _display_crypto_table(snapshot),
+        width="stretch",
+        hide_index=True,
+        height=35 * (len(snapshot) + 1) + 20,
+        column_config=_crypto_table_columns(),
+    )
+
+
+def _resolve_crypto_display_date(target_date: str, available_dates: list[str], status: dict[str, Any]) -> str:
+    if target_date in available_dates:
+        return target_date
+    actual_date = str(status.get("actual_date") or "")
+    if actual_date in available_dates:
+        return actual_date
+    latest_date = latest_crypto_cache_date()
+    return latest_date or target_date
+
+
+def _ensure_crypto_selected_date(dates: list[str], default_date: str) -> str:
+    if not dates:
+        return default_date
+    selected = st.session_state.get(CRYPTO_DATE_SELECT_KEY)
+    if selected not in dates:
+        selected = default_date if default_date in dates else dates[-1]
+        st.session_state[CRYPTO_DATE_SELECT_KEY] = selected
+    return str(selected)
+
+
+def _apply_pending_crypto_selected_date(dates: list[str]) -> None:
+    pending = st.session_state.pop(PENDING_CRYPTO_DATE_SELECT_KEY, None)
+    if pending in dates:
+        st.session_state[CRYPTO_DATE_SELECT_KEY] = pending
+
+
+def _render_crypto_refresh_status(display_date: str, target_date: str, force_poll: bool = False) -> None:
+    should_poll = force_poll or read_crypto_refresh_status().get("status") == CRYPTO_REFRESH_RUNNING
+    if hasattr(st, "fragment") and should_poll:
+
+        @st.fragment(run_every="5s")
+        def _crypto_refresh_fragment() -> None:
+            _render_crypto_refresh_status_panel(display_date, target_date)
+
+        _crypto_refresh_fragment()
+        return
+
+    _render_crypto_refresh_status_panel(display_date, target_date)
+
+
+def _render_crypto_refresh_status_panel(display_date: str, target_date: str) -> None:
+    status = read_crypto_refresh_status()
+    status_name = str(status.get("status") or CRYPTO_REFRESH_IDLE)
+    message = _crypto_status_message(status, display_date, target_date)
+    notice_col, latest_col, check_col = st.columns([1.48, 0.34, 0.34], vertical_alignment="center")
+    with notice_col:
+        if status_name == CRYPTO_REFRESH_SUCCEEDED:
+            st.success(message)
+        elif status_name == CRYPTO_REFRESH_FAILED:
+            if display_date and display_date != target_date:
+                st.warning(message)
+            else:
+                st.error(message)
+        elif status_name in {CRYPTO_REFRESH_RUNNING, CRYPTO_REFRESH_SKIPPED}:
+            st.info(message)
+        else:
+            st.info(message)
+        updated_at = str(status.get("updated_at") or "").strip()
+        if updated_at:
+            st.caption(f"最近更新 {updated_at}")
+    with latest_col:
+        if target_date in get_available_crypto_dates() and display_date != target_date:
+            if st.button("刷新到最新数据", key="refresh-crypto-to-latest", use_container_width=True):
+                st.session_state[PENDING_CRYPTO_DATE_SELECT_KEY] = target_date
+                st.rerun()
+    with check_col:
+        if st.button(
+            "检查最新数据",
+            key="check-crypto-latest-data",
+            disabled=status_name == CRYPTO_REFRESH_RUNNING,
+            use_container_width=True,
+        ):
+            _start_crypto_refresh_thread(force=True)
+            st.rerun()
+
+
+def _crypto_status_message(status: dict[str, Any], display_date: str, target_date: str) -> str:
+    status_name = str(status.get("status") or CRYPTO_REFRESH_IDLE)
+    if status_name == CRYPTO_REFRESH_RUNNING:
+        return f"正在更新币圈现货 {target_date} 30日成交额数据..."
+    if status_name == CRYPTO_REFRESH_SUCCEEDED:
+        return str(status.get("message") or f"已生成 {target_date} 币圈现货30日成交额 Top{CRYPTO_TOP_TURNOVER_LIMIT}")
+    if status_name == CRYPTO_REFRESH_FAILED:
+        base = str(status.get("message") or f"{target_date} 币圈现货30日成交额更新失败")
+        error = str(status.get("error") or "").strip()
+        suffix = f"：{_short_error(error)}" if error else ""
+        return f"{base}{suffix}"
+    if status_name == CRYPTO_REFRESH_SKIPPED:
+        return str(status.get("message") or f"当前已是最新币圈现货 {target_date} 30日成交额数据")
+    if display_date and display_date != target_date:
+        return f"当前展示 {display_date} 币圈现货缓存，目标日期 {target_date} 尚未生成"
+    return "等待检查币圈现货最新数据"
+
+
 def _render_refresh_status(selected_date: str, force_poll: bool = False) -> None:
     should_poll = force_poll or read_refresh_status().get("status") == REFRESH_RUNNING
     if hasattr(st, "fragment") and should_poll:
@@ -261,7 +660,9 @@ def _render_refresh_status_panel(selected_date: str) -> None:
     )
     active_refresh = refresh_task_is_active()
 
-    notice_col, latest_col, retry_col, check_col = st.columns([1.28, 0.34, 0.34, 0.34], vertical_alignment="center")
+    notice_col, latest_col, retry_date_col, retry_col, check_col = st.columns(
+        [1.18, 0.3, 0.34, 0.34, 0.34], vertical_alignment="center"
+    )
     with notice_col:
         level = view["level"]
         if level == "success":
@@ -292,6 +693,15 @@ def _render_refresh_status_panel(selected_date: str) -> None:
                 if latest_date in get_available_dates():
                     st.session_state[PENDING_DATE_SELECT_KEY] = latest_date
                 st.rerun()
+    with retry_date_col:
+        if st.button(
+            "重拉当前日期",
+            key=f"retry-selected-date-{selected_date}",
+            disabled=view["status"] == REFRESH_RUNNING and active_refresh,
+            use_container_width=True,
+        ):
+            _start_retry_selected_thread(selected_date)
+            st.rerun()
     with retry_col:
         if view["show_retry_button"]:
             if st.button(
@@ -850,13 +1260,102 @@ def _render_changes(changes: dict[str, list[str]]) -> None:
         )
 
 
-def _render_data_quality(meta: dict[str, object]) -> None:
-    return
+def _render_data_quality(meta: dict[str, object], snapshot: pd.DataFrame) -> None:
+    health = _data_health_summary(meta, snapshot)
+    if health["rows"] and (health["low_confidence_rows"] or health["medium_confidence_rows"]):
+        cols = st.columns(5)
+        cols[0].metric("数据行数", health["rows"])
+        cols[1].metric("东方财富主源", health["eastmoney_rows"])
+        cols[2].metric("新浪兜底", health["sina_rows"])
+        cols[3].metric("低置信行", health["low_confidence_rows"], f"Top10 {health['top10_low_confidence_rows']}")
+        cols[4].metric("fallback/未知", health["fallback_rows"])
+
+    if health["top10_low_confidence_rows"]:
+        st.warning(
+            f"当前 Top10 观察池含 {health['top10_low_confidence_rows']} 条低置信行情，"
+            "不能按完整数据解读；请点击“重拉当前日期”重新拉取正确历史行情。"
+        )
+    elif health["low_confidence_rows"]:
+        st.warning(
+            f"完整榜单含 {health['low_confidence_rows']} 条低置信数据；相关行已标记具体原因，建议重拉当前日期。"
+        )
+
+    if health["source_summary"]:
+        st.caption(f"行情来源分布：{health['source_summary']}")
+
+
+def _data_health_summary(meta: dict[str, object], snapshot: pd.DataFrame) -> dict[str, object]:
+    rows = int(len(snapshot))
+    if rows == 0:
+        return {
+            "rows": 0,
+            "low_confidence_rows": 0,
+            "medium_confidence_rows": 0,
+            "top10_low_confidence_rows": 0,
+            "fallback_rows": 0,
+            "eastmoney_rows": 0,
+            "sina_rows": 0,
+            "source_summary": "",
+        }
+
+    confidence = (
+        snapshot["数据置信度"].fillna("未记录").astype(str)
+        if "数据置信度" in snapshot
+        else pd.Series(["未记录"] * rows, index=snapshot.index)
+    )
+    history_source = (
+        snapshot["行情来源"].fillna("来源未记录").astype(str)
+        if "行情来源" in snapshot
+        else pd.Series(["来源未记录"] * rows, index=snapshot.index)
+    )
+    share_source = (
+        snapshot["份额来源"].fillna("来源未记录").astype(str)
+        if "份额来源" in snapshot
+        else pd.Series(["来源未记录"] * rows, index=snapshot.index)
+    )
+    low_confidence_rows = int(confidence.eq("低").sum())
+    medium_confidence_rows = int(confidence.eq("中").sum())
+    top10_low_confidence_rows = int(confidence.head(10).eq("低").sum())
+    fallback_pattern = "fallback|补点|兜底|实时行情|来源未记录"
+    fallback_rows = int(
+        (
+            history_source.str.contains(fallback_pattern, case=False, regex=True)
+            | share_source.str.contains(fallback_pattern, case=False, regex=True)
+        ).sum()
+    )
+    eastmoney_rows = int(history_source.str.contains("东方财富", case=False, regex=False).sum())
+    sina_rows = int(history_source.str.contains("新浪", case=False, regex=False).sum())
+
+    quality = meta.get("data_quality") if isinstance(meta, dict) else None
+    if isinstance(quality, dict):
+        low_confidence_rows = int(quality.get("low_confidence_rows") or low_confidence_rows)
+        top10_low_confidence_rows = int(quality.get("top10_low_confidence_rows") or top10_low_confidence_rows)
+
+    source_counts = history_source.value_counts().to_dict()
+    source_summary = "、".join(f"{key} {value}" for key, value in list(source_counts.items())[:5])
+    return {
+        "rows": rows,
+        "low_confidence_rows": low_confidence_rows,
+        "medium_confidence_rows": medium_confidence_rows,
+        "top10_low_confidence_rows": top10_low_confidence_rows,
+        "fallback_rows": fallback_rows,
+        "eastmoney_rows": eastmoney_rows,
+        "sina_rows": sina_rows,
+        "source_summary": source_summary,
+    }
 
 
 def _render_detail(row: pd.Series, selected_date: str) -> None:
     st.subheader(f"{row['ETF名称']} {row['代码']} 明细")
     st.markdown(f"<div class='reason-line'>{row['观察理由']}</div>", unsafe_allow_html=True)
+    confidence = str(row.get("数据置信度", "未记录"))
+    issue = str(row.get("数据问题", "") or "")
+    if confidence in {"低", "中"} or (issue and issue != "无"):
+        st.warning(
+            f"数据置信度：{confidence}；行情来源：{row.get('行情来源', '未记录')}；"
+            f"份额来源：{row.get('份额来源', '未记录')}；问题：{issue or '未记录'}。"
+            "如需按完整数据参考，请重拉当前日期。"
+        )
 
     detail_cols = st.columns([0.95, 0.95, 0.95, 1.25], vertical_alignment="center")
     detail_cols[0].metric("主线得分", int(row["主线得分"]), row["趋势状态"], help=TERM_HELP["主线得分"])
@@ -908,25 +1407,121 @@ def _sort_snapshot_for_display(df: pd.DataFrame, sort_label: str) -> pd.DataFram
     return df.sort_values(sort_column, ascending=ascending).reset_index(drop=True)
 
 
+def _display_crypto_table(df: pd.DataFrame) -> pd.DataFrame:
+    value_columns = ["币种", "30日成交额", "日均成交额", "交易所数", "交易对数", "最大来源", "最大来源占比", "来源明细"]
+    columns = ["排名", *value_columns]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    source = df.copy()
+    for column in ["30日成交额", "日均成交额", "最大来源占比", "交易所数", "交易对数"]:
+        source[column] = pd.to_numeric(source.get(column), errors="coerce")
+    source = source.sort_values("30日成交额", ascending=False).reset_index(drop=True)
+    table = source[value_columns].copy()
+    table.insert(0, "排名", range(1, len(table) + 1))
+    table["30日成交额"] = table["30日成交额"].map(_format_usd_equivalent_zh)
+    table["日均成交额"] = table["日均成交额"].map(_format_usd_equivalent_zh)
+    return table
+
+
+def _crypto_table_columns() -> dict[str, object]:
+    return {
+        "排名": st.column_config.NumberColumn("排名", format="%d", width="small"),
+        "币种": st.column_config.TextColumn("币种", width="small"),
+        "30日成交额": st.column_config.TextColumn("30日成交额", width="medium"),
+        "日均成交额": st.column_config.TextColumn("日均成交额", width="medium"),
+        "交易所数": st.column_config.NumberColumn("交易所数", format="%d", width="small"),
+        "交易对数": st.column_config.NumberColumn("交易对数", format="%d", width="small"),
+        "最大来源": st.column_config.TextColumn("最大来源", width="small"),
+        "最大来源占比": st.column_config.NumberColumn("最大来源占比", format="%.2f%%", width="small"),
+        "来源明细": st.column_config.TextColumn("来源明细", width="large"),
+    }
+
+
+def _display_us_stock_table(df: pd.DataFrame) -> pd.DataFrame:
+    value_columns = ["代码", "名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"]
+    columns = ["序号", *value_columns]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    source = df.copy()
+    for column in ["最新价", "涨跌幅", "涨跌额", "成交额", "市值"]:
+        source[column] = pd.to_numeric(source.get(column), errors="coerce")
+    source = source.sort_values("成交额", ascending=False).reset_index(drop=True)
+    table = source[value_columns].copy()
+    table.insert(0, "序号", range(1, len(table) + 1))
+    table["成交额"] = table["成交额"].map(_format_usd_amount_zh)
+    table["市值"] = table["市值"].map(_format_usd_amount_zh)
+    return table
+
+
+def _us_stock_table_columns() -> dict[str, object]:
+    return {
+        "序号": st.column_config.NumberColumn("序号", format="%d", width="small"),
+        "代码": st.column_config.TextColumn("代码", width="small"),
+        "名称": st.column_config.TextColumn("名称", width="medium"),
+        "最新价": st.column_config.NumberColumn("最新价", format="%.3f", width="small"),
+        "涨跌幅": st.column_config.NumberColumn("涨跌幅", format="%+.2f%%", width="small"),
+        "涨跌额": st.column_config.NumberColumn("涨跌额", format="%+.3f", width="small"),
+        "成交额": st.column_config.TextColumn("成交额", width="small"),
+        "市值": st.column_config.TextColumn("市值", width="small"),
+    }
+
+
+def _format_usd_amount_zh(value: object) -> str:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "-"
+    amount = float(numeric)
+    sign = "-" if amount < 0 else ""
+    absolute = abs(amount)
+    if absolute >= 1_000_000_000_000:
+        return f"{sign}{_trim_decimal(absolute / 1_000_000_000_000)}万亿"
+    if absolute >= 100_000_000:
+        return f"{sign}{_trim_decimal(absolute / 100_000_000)}亿"
+    if absolute >= 10_000:
+        return f"{sign}{_trim_decimal(absolute / 10_000)}万"
+    return f"{sign}{_trim_decimal(absolute)}"
+
+
+def _format_usd_equivalent_zh(value: object) -> str:
+    formatted = _format_usd_amount_zh(value)
+    return "-" if formatted == "-" else f"{formatted} USD等值"
+
+
+def _trim_decimal(value: float) -> str:
+    text = f"{value:.2f}"
+    return text.rstrip("0").rstrip(".")
+
+
 def _display_table(df: pd.DataFrame) -> pd.DataFrame:
-    table = df[
-        [
-            "排名",
-            "ETF名称",
-            "代码",
-            "主线得分",
-            "趋势状态",
-            "成交额Top30次数",
-            "成交额排名",
-            "成交额(亿)",
-            "20日涨幅",
-            "60日涨幅",
-            "120日涨幅",
-            "5日份额变化",
-            "20日份额变化",
-            "数据质量",
-        ]
-    ].rename(columns={"排名": "主线排名"}).copy()
+    display_columns = [
+        "排名",
+        "ETF名称",
+        "代码",
+        "主线得分",
+        "趋势状态",
+        "成交额Top30次数",
+        "成交额排名",
+        "成交额(亿)",
+        "20日涨幅",
+        "60日涨幅",
+        "120日涨幅",
+        "5日份额变化",
+        "20日份额变化",
+        "数据质量",
+        "数据置信度",
+        "行情来源",
+        "数据问题",
+    ]
+    source = df.copy()
+    for column, default in {
+        "数据质量": "未记录",
+        "数据置信度": "未记录",
+        "行情来源": "来源未记录",
+        "数据问题": "历史缓存未包含数据质量字段，建议重拉当前日期",
+    }.items():
+        if column not in source:
+            source[column] = default
+    table = source[display_columns].rename(columns={"排名": "主线排名"}).copy()
     numeric_columns = [
         "主线排名",
         "主线得分",
@@ -962,6 +1557,9 @@ def _table_columns() -> dict[str, object]:
         "20日份额变化": st.column_config.NumberColumn("20日份额变化", format="%+.2f%%", width="small", help=TERM_HELP["20日份额变化"]),
         "成交额(亿)": st.column_config.NumberColumn("成交额(亿)", format="%.2f", width="small", help=TERM_HELP["成交额(亿)"]),
         "数据质量": st.column_config.TextColumn("数据质量", width="small", help=TERM_HELP["数据质量"]),
+        "数据置信度": st.column_config.TextColumn("数据置信度", width="small", help=TERM_HELP["数据置信度"]),
+        "行情来源": st.column_config.TextColumn("行情来源", width="medium", help=TERM_HELP["行情来源"]),
+        "数据问题": st.column_config.TextColumn("数据问题", width="large", help=TERM_HELP["数据问题"]),
     }
 
 

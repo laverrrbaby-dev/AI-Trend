@@ -93,6 +93,7 @@ DISPLAY_NUMERIC_COLUMNS = [
     "20日份额变化",
     "成交额(亿)",
 ]
+DISPLAY_TEXT_COLUMNS = ["数据质量", "数据置信度", "行情来源", "数据问题"]
 REQUIRED_TERM_HELP_KEYS = [
     "数据状态",
     "头部主线",
@@ -115,6 +116,10 @@ REQUIRED_TERM_HELP_KEYS = [
     "20日份额变化",
     "成交额(亿)",
     "数据质量",
+    "数据置信度",
+    "行情来源",
+    "份额来源",
+    "数据问题",
     "份额变化",
     "成交额热度",
     "份额流入",
@@ -134,6 +139,9 @@ TABLE_HELP_COLUMNS = [
     "20日份额变化",
     "成交额(亿)",
     "数据质量",
+    "数据置信度",
+    "行情来源",
+    "数据问题",
 ]
 
 
@@ -194,6 +202,10 @@ class FunctionalContractsTests(unittest.TestCase):
         for column in DISPLAY_NUMERIC_COLUMNS:
             with self.subTest(column=column):
                 self.assertTrue(pd.api.types.is_numeric_dtype(table[column]), f"{column} is {table[column].dtype}")
+        for column in DISPLAY_TEXT_COLUMNS:
+            with self.subTest(column=column):
+                self.assertIn(column, table.columns)
+                self.assertFalse(pd.api.types.is_numeric_dtype(table[column]), f"{column} is {table[column].dtype}")
 
     def test_table_columns_use_numeric_display_formatting(self) -> None:
         columns = app._table_columns()
@@ -203,6 +215,9 @@ class FunctionalContractsTests(unittest.TestCase):
         self.assertEqual(columns["主线排名"]["type_config"]["format"], "%d")
         self.assertEqual(columns["成交额排名"]["type_config"]["format"], "%d")
         self.assertEqual(columns["成交额(亿)"]["type_config"]["format"], "%.2f")
+        for column in DISPLAY_TEXT_COLUMNS:
+            with self.subTest(column=column):
+                self.assertEqual(columns[column]["type_config"]["type"], "text")
         for column in ["20日涨幅", "60日涨幅", "120日涨幅", "5日份额变化", "20日份额变化"]:
             with self.subTest(column=column):
                 self.assertEqual(columns[column]["type_config"]["type"], "number")
@@ -227,6 +242,105 @@ class FunctionalContractsTests(unittest.TestCase):
             with self.subTest(column=column):
                 self.assertIn("help", columns[column])
                 self.assertEqual(columns[column]["help"], app.TERM_HELP[column])
+
+    def test_us_stock_display_table_matches_requested_fields_and_order(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "代码": "NVDA",
+                    "名称": "NVIDIA Corporation",
+                    "最新价": 222.82,
+                    "涨跌幅": -0.686,
+                    "涨跌额": -1.54,
+                    "成交额": 42_824_000_000.0,
+                    "市值": 5_392_244_000_000.0,
+                },
+                {
+                    "代码": "MU",
+                    "名称": "Micron Technology",
+                    "最新价": 1064.10,
+                    "涨跌幅": 2.762,
+                    "涨跌额": 28.60,
+                    "成交额": 50_107_000_000.0,
+                    "市值": 1_200_021_803_669.0,
+                },
+            ]
+        )
+
+        table = app._display_us_stock_table(frame)
+
+        self.assertEqual(table.columns.tolist(), ["序号", "代码", "名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"])
+        self.assertEqual(table["序号"].tolist(), [1, 2])
+        self.assertEqual(table["代码"].tolist(), ["MU", "NVDA"])
+        self.assertEqual(table.iloc[0]["成交额"], "501.07亿")
+        self.assertEqual(table.iloc[0]["市值"], "1.2万亿")
+
+    def test_us_stock_table_columns_use_requested_formatting(self) -> None:
+        columns = app._us_stock_table_columns()
+
+        self.assertEqual(columns["序号"]["type_config"]["format"], "%d")
+        self.assertEqual(columns["最新价"]["type_config"]["format"], "%.3f")
+        self.assertEqual(columns["涨跌幅"]["type_config"]["format"], "%+.2f%%")
+        self.assertEqual(columns["涨跌额"]["type_config"]["format"], "%+.3f")
+        self.assertEqual(columns["成交额"]["type_config"]["type"], "text")
+        self.assertEqual(columns["市值"]["type_config"]["type"], "text")
+
+    def test_us_stock_display_date_prefers_latest_target_then_status_actual(self) -> None:
+        self.assertEqual(app._resolve_us_stock_display_date("2026-06-03", ["2026-06-02", "2026-06-03"], {}), "2026-06-03")
+        self.assertEqual(
+            app._resolve_us_stock_display_date("2026-06-03", ["2026-06-02"], {"actual_date": "2026-06-02"}),
+            "2026-06-02",
+        )
+
+    def test_market_options_include_crypto_spot(self) -> None:
+        self.assertEqual(app.MARKET_OPTIONS, ["A股ETF", "美股", "币圈现货"])
+
+    def test_crypto_display_table_matches_requested_fields_and_order(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "币种": "ETH",
+                    "30日成交额": 8_000_000_000.0,
+                    "日均成交额": 266_666_666.67,
+                    "交易所数": 4,
+                    "交易对数": 5,
+                    "最大来源": "Coinbase",
+                    "最大来源占比": 40.5,
+                    "来源明细": "Coinbase 40.5% / Binance 30.0%",
+                },
+                {
+                    "币种": "BTC",
+                    "30日成交额": 12_340_000_000.0,
+                    "日均成交额": 411_333_333.33,
+                    "交易所数": 5,
+                    "交易对数": 6,
+                    "最大来源": "Binance",
+                    "最大来源占比": 45.2,
+                    "来源明细": "Binance 45.2% / Coinbase 20.0%",
+                },
+            ]
+        )
+
+        table = app._display_crypto_table(frame)
+
+        self.assertEqual(
+            table.columns.tolist(),
+            ["排名", "币种", "30日成交额", "日均成交额", "交易所数", "交易对数", "最大来源", "最大来源占比", "来源明细"],
+        )
+        self.assertEqual(table["排名"].tolist(), [1, 2])
+        self.assertEqual(table["币种"].tolist(), ["BTC", "ETH"])
+        self.assertEqual(table.iloc[0]["30日成交额"], "123.4亿 USD等值")
+        self.assertEqual(table.iloc[0]["日均成交额"], "4.11亿 USD等值")
+
+    def test_crypto_table_columns_use_requested_formatting(self) -> None:
+        columns = app._crypto_table_columns()
+
+        self.assertEqual(columns["排名"]["type_config"]["format"], "%d")
+        self.assertEqual(columns["30日成交额"]["type_config"]["type"], "text")
+        self.assertEqual(columns["日均成交额"]["type_config"]["type"], "text")
+        self.assertEqual(columns["交易所数"]["type_config"]["format"], "%d")
+        self.assertEqual(columns["交易对数"]["type_config"]["format"], "%d")
+        self.assertEqual(columns["最大来源占比"]["type_config"]["format"], "%.2f%%")
 
     def test_table_clicks_update_shared_detail_selection(self) -> None:
         snapshot = load_snapshot(DATA_DATE, root=self.root)
