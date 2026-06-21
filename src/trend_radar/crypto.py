@@ -488,8 +488,10 @@ def _metadata_payload(
     skipped_exchanges: list[str] | None = None,
     partial: bool | None = None,
 ) -> dict[str, Any]:
+    source_mode = _source_mode(source, successful_exchanges)
     return {
         "source": source,
+        "source_mode": source_mode,
         "window_start": window.start_date.isoformat(),
         "window_end": window.end_date.isoformat(),
         "window_days": window.days,
@@ -503,6 +505,14 @@ def _metadata_payload(
         "aggregated_assets": int(len(frame)),
         "exchange_metadata": exchange_metadata,
     }
+
+
+def _source_mode(source: str, successful_exchanges: list[str]) -> str:
+    if source == "binance_plugin":
+        return "binance_plugin"
+    if source == "binance_vision_fallback" or set(successful_exchanges).issubset({"binance", "binance_vision"}):
+        return "binance_public_fallback"
+    return "multi_exchange_public"
 
 
 @dataclass(frozen=True)

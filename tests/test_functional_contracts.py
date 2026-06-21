@@ -342,6 +342,16 @@ class FunctionalContractsTests(unittest.TestCase):
         self.assertEqual(columns["交易对数"]["type_config"]["format"], "%d")
         self.assertEqual(columns["最大来源占比"]["type_config"]["format"], "%.2f%%")
 
+    def test_crypto_source_caption_is_honest_for_binance_only_source(self) -> None:
+        self.assertEqual(
+            app._crypto_source_caption({"source_mode": "binance_public_fallback", "successful_exchanges": ["binance_vision"]}),
+            "Binance 现货滚动30日成交额 | USD系报价近似等值 | 不含交易建议",
+        )
+        self.assertEqual(
+            app._crypto_source_caption({"source_mode": "multi_exchange_public", "successful_exchanges": ["binance", "coinbase"]}),
+            "多交易所现货成交额聚合 | USD系报价近似等值 | 不含交易建议",
+        )
+
     def test_table_clicks_update_shared_detail_selection(self) -> None:
         snapshot = load_snapshot(DATA_DATE, root=self.root)
         top10 = snapshot.head(10).copy()

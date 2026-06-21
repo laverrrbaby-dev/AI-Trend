@@ -502,7 +502,7 @@ def _render_crypto_turnover_page() -> None:
     header_left, header_date, header_status = st.columns([1.45, 0.58, 0.92], vertical_alignment="center")
     with header_left:
         st.title(f"加密货币{CRYPTO_WINDOW_DAYS}日成交额Top{CRYPTO_TOP_TURNOVER_LIMIT}")
-        st.caption("多交易所现货成交额聚合 | USD系报价近似等值 | 不含交易建议")
+        st.caption(_crypto_source_caption(metadata))
     with header_date:
         display_date = st.selectbox("数据日期", date_options, index=default_index, key=CRYPTO_DATE_SELECT_KEY)
         snapshot = load_crypto_snapshot(display_date) if display_date in available_dates else pd.DataFrame()
@@ -529,7 +529,10 @@ def _render_crypto_turnover_page() -> None:
     if metadata.get("partial"):
         failed = metadata.get("failed_exchanges") or []
         failed_names = "、".join(str(item.get("exchange")) for item in failed if isinstance(item, dict))
-        st.warning(f"本次为部分数据源结果，失败数据源：{failed_names or '未记录'}。")
+        skipped = metadata.get("skipped_exchanges") or []
+        skipped_names = "、".join(str(item) for item in skipped)
+        detail = failed_names or skipped_names or "未记录"
+        st.warning(f"本次为部分数据源结果，未纳入数据源：{detail}。")
 
     st.dataframe(
         _display_crypto_table(snapshot),
@@ -538,6 +541,16 @@ def _render_crypto_turnover_page() -> None:
         height=35 * (len(snapshot) + 1) + 20,
         column_config=_crypto_table_columns(),
     )
+
+
+def _crypto_source_caption(metadata: dict[str, Any]) -> str:
+    source_mode = str(metadata.get("source_mode") or "")
+    successful = {str(item) for item in metadata.get("successful_exchanges") or []}
+    if source_mode in {"binance_plugin", "binance_public_fallback"} or (
+        successful and successful.issubset({"binance", "binance_vision"})
+    ):
+        return "Binance 现货滚动30日成交额 | USD系报价近似等值 | 不含交易建议"
+    return "多交易所现货成交额聚合 | USD系报价近似等值 | 不含交易建议"
 
 
 def _resolve_crypto_display_date(target_date: str, available_dates: list[str], status: dict[str, Any]) -> str:

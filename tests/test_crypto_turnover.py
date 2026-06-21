@@ -25,6 +25,7 @@ from trend_radar.crypto import (  # noqa: E402
     CRYPTO_REFRESH_FAILED,
     CRYPTO_REFRESH_SKIPPED,
     CRYPTO_REFRESH_SUCCEEDED,
+    CryptoPair,
     KRAKEN_ASSET_PAIRS_URL,
     KRAKEN_OHLC_URL,
     OKX_HISTORY_CANDLES_URL,
@@ -38,6 +39,7 @@ from trend_radar.crypto import (  # noqa: E402
     refresh_crypto_turnover,
     resolve_crypto_target_date,
     _fetch_coinbase_records,
+    _fetch_binance_pair_records,
     _aggregate_records,
     _tag_exchange_records,
     _window,
@@ -154,6 +156,27 @@ class CryptoTurnoverTests(unittest.TestCase):
         self.assertEqual(float(frame.iloc[0]["30日成交额"]), 100.0)
         self.assertEqual(frame.iloc[0]["最大来源"], "Binance Vision")
 
+    def test_binance_daily_klines_sum_each_day_in_rolling_window(self) -> None:
+        window = _window(TARGET_DATE, 30)
+        pair = CryptoPair(symbol="BTCUSDT", request_symbol="BTCUSDT", base_asset="BTC", quote_asset="USDT")
+        day_ms = int(datetime(2026, 5, 22, tzinfo=UTC).timestamp() * 1000)
+
+        def fake_binance_klines(url: str, headers: dict[str, str]) -> object:
+            del headers
+            self.assertIn("limit=30", url)
+            return [
+                [day_ms + index * 86_400_000, "1", "1", "1", "1", "1", day_ms + 1, str(index + 1), 1, "1", "1", "0"]
+                for index in range(30)
+            ]
+
+        records = _fetch_binance_pair_records(fake_binance_klines, pair, window)
+        _tag_exchange_records(records, "binance")
+        frame = _aggregate_records(records, window, 10)
+
+        self.assertEqual(len(records), 30)
+        self.assertEqual(float(frame.iloc[0]["30日成交额"]), sum(range(1, 31)))
+        self.assertEqual(float(frame.iloc[0]["日均成交额"]), round(sum(range(1, 31)) / 30, 2))
+
     def test_refresh_writes_cache_metadata_and_status(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
@@ -171,6 +194,7 @@ class CryptoTurnoverTests(unittest.TestCase):
             self.assertEqual(snapshot.iloc[0]["币种"], "BTC")
             metadata = load_crypto_metadata(TARGET_DATE, root=root)
             self.assertEqual(metadata["source"], "multi_exchange")
+            self.assertEqual(metadata["source_mode"], "multi_exchange_public")
             self.assertEqual(metadata["window_start"], "2026-05-22")
             self.assertEqual(read_crypto_refresh_status(root)["status"], CRYPTO_REFRESH_SUCCEEDED)
 
@@ -195,6 +219,7 @@ class CryptoTurnoverTests(unittest.TestCase):
             )
             metadata = {
                 "source": "binance_vision_fallback",
+                "source_mode": "binance_public_fallback",
                 "window_start": "2026-05-21",
                 "window_end": "2026-06-19",
             }
