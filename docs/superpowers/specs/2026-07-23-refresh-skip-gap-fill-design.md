@@ -83,14 +83,17 @@ dates_to_refresh = (
 
 ## 测试
 
-在 [tests/test_refresh.py](../tests/test_refresh.py) 增加/调整用例：
+在 [tests/test_refresh.py](../tests/test_refresh.py) 调整：
 
-1. **新增** `test_refresh_skips_intermediate_missing_dates`：预先写入 `data/radar/2026-07-15.csv`，不写 07-16/19/20/21/22；mock `fetch_data` / `generate_scores`，调用 `refresh_latest_data(force=False, ...)` 后断言：
-   - `fetch_data` 仅被以 `data_date="2026-07-22"` 调用一次。
-   - 期间未对中间日期调用 `fetch_data`、未生成对应 `data/normalized/<date>/`。
-2. **保留** `test_refresh_force_retargets_existing_radar`：验证 `force=True` 时即使 target 雷达已存在也会重拉。
-3. **保留** `test_refresh_incomplete_target_removed_when_actual_earlier`：验证 95% 覆盖率下 `actual_date` 早于 target 时的清理逻辑。
-4. 跑 `.venv/bin/python scripts/run_tests.py --mode offline` 全绿。
+1. **删除** `test_missing_weekday_gap_is_backfilled_before_target`（断言 `2026-06-05` 会被自动补齐）与 `test_existing_target_still_backfills_missing_weekday_gap`（断言 target 雷达已存在时仍会补齐 gap）—— 这两个用例直接验证本次要移除的行为，留下来必失败。
+2. **新增** `test_refresh_does_not_backfill_intermediate_weekday_gap`：
+   - 预写 `data/radar/2026-07-15.csv`，不写 2026-07-16/17/20/21/22 任何工作日。
+   - mock `fetcher` / `scorer` 记录调用，`now` 取 `2026-07-22 16:00 Asia/Shanghai`。
+   - 调 `refresh_latest_data(force=False, ...)`。
+   - 断言：`fetcher` 仅被以 `data_date="2026-07-22"` 调用一次；`scorer` 也只被调一次；`data/normalized/2026-07-16/` 等中间目录不存在；`result.message` 不含 "已补齐"，等于 `已生成 2026-07-22 数据`。
+3. **新增** `test_existing_target_radar_skips_when_intermediate_dates_missing`：预写 `2026-07-22.csv` 且中间日期都缺，调 `refresh_latest_data(force=False, ...)` 断言返回 `REFRESH_SKIPPED` 且 `fetcher` 未被调用（取代旧 `test_existing_target_still_backfills_missing_weekday_gap`）。
+4. 其余既有用例（`test_existing_target_radar_skips_without_fetching`、`test_missing_target_fetches_then_scores_and_writes_success`、`test_stale_source_scores_actual_latest_history_date`、`test_partial_target_coverage_scores_recent_complete_history_date`、`test_fetch_progress_is_written_to_status`、`test_refresh_passes_resume_and_worker_options_to_fetcher`、lock / retry / scan_problem 等）原样通过。
+5. 跑 `.venv/bin/python scripts/run_tests.py --mode offline` 全绿。
 
 ## 文档
 
