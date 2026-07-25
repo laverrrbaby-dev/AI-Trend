@@ -138,7 +138,9 @@ def refresh_latest_data(
 
         try:
             existing_radar = root / "data" / "radar" / f"{target_date}.csv"
-            dates_to_refresh = _refresh_date_sequence(root, target_date, force)
+            dates_to_refresh = (
+                [target_date] if force or not existing_radar.exists() else []
+            )
             if not dates_to_refresh:
                 result = RefreshResult(
                     status=REFRESH_SKIPPED,
