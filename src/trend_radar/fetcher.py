@@ -400,7 +400,14 @@ def fetch_data(
     errors: list[str] = []
     warnings: list[str] = []
     _emit_progress(progress_callback, "fetch_spot", 0, 0)
-    spot = _load_or_fetch_spot(ak, raw_dir / "spot_em.csv", normalized_dir / "spot_all.csv", resume)
+    spot = _load_or_fetch_spot(
+        ak,
+        raw_dir / "spot_em.csv",
+        normalized_dir / "spot_all.csv",
+        resume,
+        target=target,
+        warnings=warnings,
+    )
     spot_data_dates = _frame_data_dates(spot)
     spot_matches_target = _frame_dates_match_target(spot, target)
     candidate_source = "target_spot"
@@ -710,22 +717,56 @@ def _emit_progress(
     )
 
 
-def _load_or_fetch_spot(ak: Any, raw_path: Path, normalized_path: Path, resume: bool) -> pd.DataFrame:
-    if resume:
-        cached_spot = _read_valid_spot(normalized_path)
-        if cached_spot is not None:
-            return cached_spot
-        cached_raw = _read_csv(raw_path)
-        if cached_raw is not None:
-            spot = normalize_spot(cached_raw)
-            _write_csv(spot, normalized_path)
-            return spot
+def _load_or_fetch_spot(
+    ak: Any,
+    raw_path: Path,
+    normalized_path: Path,
+    resume: bool,
+    target: pd.Timestamp | None = None,
+    warnings: list[str] | None = None,
+) -> pd.DataFrame:
+    """加载或拉取 spot 快照，resume 时校验 data_date。
 
-    spot_raw = _call_akshare(ak, "fund_etf_spot_em")
-    _write_csv(spot_raw, raw_path)
-    spot = normalize_spot(spot_raw)
-    _write_csv(spot, normalized_path)
-    return spot
+    回退链：
+    1. resume + cached_spot 有效 + 日期匹配 target → 返回 cached_spot
+    2. cached_spot stale 或不存在 → akshare 重拉
+    3. akshare 失败 → 用 raw_dir/spot_em.csv（如果存在）
+    4. raw 也没有 → 用 stale cached_spot + warning（保底）
+    """
+    cached_spot = _read_valid_spot(normalized_path) if resume else None
+
+    # 路径 1：cached 有效且日期匹配
+    if cached_spot is not None and target is not None and _frame_dates_match_target(cached_spot, target):
+        return cached_spot
+
+    # 路径 2：尝试 akshare 重拉
+    try:
+        spot_raw = _call_akshare(ak, "fund_etf_spot_em")
+        _write_csv(spot_raw, raw_path)
+        spot = normalize_spot(spot_raw)
+        _write_csv(spot, normalized_path)
+        return spot
+    except Exception as ak_exc:  # noqa: BLE001 - 回退到 raw/stale
+        # 路径 3：akshare 失败，尝试 raw
+        if raw_path.exists():
+            if warnings is not None:
+                warnings.append(f"akshare fund_etf_spot_em failed: {ak_exc}; using raw spot snapshot")
+            raw_frame = _read_csv(raw_path)
+            if raw_frame is not None:
+                spot = normalize_spot(raw_frame)
+                _write_csv(spot, normalized_path)
+                return spot
+
+        # 路径 4：raw 也没有，回退 stale cached
+        if cached_spot is not None:
+            if warnings is not None:
+                warnings.append(
+                    f"akshare fund_etf_spot_em failed and no raw spot available: {ak_exc}; "
+                    "using stale cached spot snapshot"
+                )
+            return cached_spot
+
+        raise
 
 
 def _load_or_fetch_history(

@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pandas as pd
 
@@ -398,6 +398,116 @@ class FetcherResumeParallelTests(unittest.TestCase):
             patch("trend_radar.fetcher._fetch_history_eastmoney_with_provider", side_effect=fake_eastmoney),
         ):
             return fetch_data(*args, **kwargs)
+
+
+class SpotStaleResumeTests(unittest.TestCase):
+    def _raw_history(self, data_date: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "日期": [data_date],
+                "开盘": [1.0], "最高": [1.1], "最低": [0.9],
+                "收盘": [1.0], "成交额": [500_000_000], "涨跌幅": [0.1],
+            }
+        )
+
+    def _fetch(self, fake_ak: _FakeAk, *args: object, **kwargs: object) -> object:
+        def fake_eastmoney(code: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
+            return fake_ak.fund_etf_hist_em(code, start_date=start_date, end_date=end_date), "eastmoney_mock"
+
+        with (
+            patch("trend_radar.fetcher._load_akshare", return_value=fake_ak),
+            patch("trend_radar.fetcher._fetch_history_eastmoney_with_provider", side_effect=fake_eastmoney),
+        ):
+            return fetch_data(*args, **kwargs)
+
+    def test_resume_stale_spot_triggers_refetch(self) -> None:
+        """R1: resume 时 cached_spot 日期不匹配 target → 重拉 akshare"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            stale_date = "2026-05-28"
+
+            # 预写 stale normalized spot（日期=昨天）
+            normalized_dir = root / "data" / "normalized" / data_date
+            normalized_dir.mkdir(parents=True)
+            stale_spot = pd.DataFrame({
+                "code": ["159995"],
+                "name": ["测试ETF"],
+                "data_date": [stale_date],
+                "amount_yi": [5.0],
+                "latest_share_yi": [10.0],
+            })
+            stale_spot.to_csv(normalized_dir / "spot_all.csv", index=False)
+
+            fake_ak = _FakeAk({"159995": self._raw_history(data_date)}, spot_date=data_date)
+
+            result = self._fetch(fake_ak, data_date, root=root, codes=["159995"], resume=True, max_workers=2)
+
+            self.assertEqual(result.candidate_rows, 1)
+            # 重拉后 spot 日期应该是 data_date
+            new_spot = pd.read_csv(normalized_dir / "spot_all.csv", dtype={"code": str})
+            self.assertEqual(str(new_spot["data_date"].iloc[0]), data_date)
+
+    def test_resume_stale_spot_akshare_fails_falls_back_to_raw(self) -> None:
+        """R1: akshare 重拉失败 → 用 raw_dir/spot_em.csv"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            stale_date = "2026-05-28"
+
+            normalized_dir = root / "data" / "normalized" / data_date
+            normalized_dir.mkdir(parents=True)
+            raw_dir = root / "data" / "raw" / data_date / "history"
+            raw_dir.mkdir(parents=True)
+
+            # 预写 stale normalized spot
+            stale_spot = pd.DataFrame({
+                "code": ["159995"], "name": ["测试ETF"],
+                "data_date": [stale_date], "amount_yi": [5.0],
+                "latest_share_yi": [10.0],
+            })
+            stale_spot.to_csv(normalized_dir / "spot_all.csv", index=False)
+
+            # 预写 raw spot（昨天的 raw，但日期是 stale）
+            raw_spot = pd.DataFrame({
+                "代码": ["159995"], "名称": ["测试ETF"],
+                "数据日期": [stale_date],
+            })
+            raw_spot.to_csv(root / "data" / "raw" / data_date / "spot_em.csv", index=False)
+
+            # fake_ak 的 spot 接口抛异常
+            fake_ak = _FakeAk({"159995": self._raw_history(data_date)})
+            fake_ak.fund_etf_spot_em = MagicMock(side_effect=RuntimeError("akshare down"))
+
+            result = self._fetch(fake_ak, data_date, root=root, codes=["159995"], resume=True, max_workers=2)
+
+            # 应回退到 raw（仍是 stale 日期），不抛异常
+            self.assertEqual(result.candidate_rows, 1)
+
+    def test_resume_stale_spot_no_raw_uses_stale_cached(self) -> None:
+        """R1: akshare 失败 + raw 没有 → 用 stale cached_spot（当前行为，保底）"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            stale_date = "2026-05-28"
+
+            normalized_dir = root / "data" / "normalized" / data_date
+            normalized_dir.mkdir(parents=True)
+
+            stale_spot = pd.DataFrame({
+                "code": ["159995"], "name": ["测试ETF"],
+                "data_date": [stale_date], "amount_yi": [5.0],
+                "latest_share_yi": [10.0],
+            })
+            stale_spot.to_csv(normalized_dir / "spot_all.csv", index=False)
+
+            fake_ak = _FakeAk({"159995": self._raw_history(data_date)})
+            fake_ak.fund_etf_spot_em = MagicMock(side_effect=RuntimeError("akshare down"))
+
+            # 不预写 raw，应回退到 stale cached
+            result = self._fetch(fake_ak, data_date, root=root, codes=["159995"], resume=True, max_workers=2)
+
+            self.assertEqual(result.candidate_rows, 1)
 
 
 if __name__ == "__main__":
