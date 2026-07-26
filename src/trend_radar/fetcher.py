@@ -1157,26 +1157,30 @@ def _fetch_history_with_provider(ak: Any, code: str, start_date: str, end_date: 
 def _fetch_history_with_attempt_details(
     ak: Any, code: str, start_date: str, end_date: str
 ) -> tuple[pd.DataFrame, str, str | None, str | None]:
+    """eastmoney 单次重试 + sina 超时兜底。
+
+    Returns: (frame, provider, primary_error, fallback_error)
+    """
     errors: list[str] = []
 
-    for attempt in range(2):
-        try:
-            frame, provider = _fetch_history_eastmoney_with_provider(code, start_date, end_date)
-            return frame, provider, None, None
-        except Exception as exc:
-            errors.append(f"eastmoney[{attempt}]: {exc}")
-            if attempt < 1:
-                delay = 0.2 * (2 ** attempt) + random.uniform(0, 0.1)
-                time.sleep(delay)
+    # eastmoney 单次重试（原 2 次改为 1 次）
+    try:
+        frame, provider = _fetch_history_eastmoney_with_provider(code, start_date, end_date)
+        return frame, provider, None, None
+    except Exception as exc:
+        errors.append(f"eastmoney: {exc}")
 
     primary_error = "; ".join(errors)
+
+    # sina 兜底（带超时）
     try:
-        return _fetch_history_sina(ak, code, start_date, end_date), "sina", primary_error, None
+        frame = _fetch_history_sina_with_timeout(ak, code, start_date, end_date, timeout=10)
+        return frame, "sina", primary_error, None
     except Exception as exc:
         fallback_error = f"sina: {exc}"
         errors.append(fallback_error)
 
-    raise RuntimeError(f"All sources exhausted for {code}: {'; '.join(errors[-3:])}")
+    raise RuntimeError(f"All sources exhausted for {code}: {'; '.join(errors[-2:])}")
 
 
 def _is_eastmoney_provider(provider: str | None) -> bool:
@@ -1199,7 +1203,7 @@ def _fetch_history_eastmoney_with_provider(code: str, start_date: str, end_date:
         except Exception as curl_exc:
             errors.append(f"curl failed: {curl_exc}")
             proxy = _history_proxy()
-            if proxy:
+            if proxy:  # 仅在 proxy 非空时尝试
                 try:
                     return _fetch_history_eastmoney_curl(url, proxy=proxy), "eastmoney_curl_proxy"
                 except Exception as proxy_exc:
@@ -1302,6 +1306,40 @@ def _eastmoney_payload_to_frame(data: dict[str, Any]) -> pd.DataFrame:
         return pd.DataFrame(columns=_HISTORY_API_COLUMNS)
     rows = [item.split(",") for item in klines]
     return pd.DataFrame(rows, columns=_HISTORY_API_COLUMNS)
+
+
+def _fetch_history_sina_with_timeout(
+    ak: Any, code: str, start_date: str, end_date: str, timeout: int = 10
+) -> pd.DataFrame:
+    """调用 sina 接口并加超时保护。
+
+    Note: 用 threading.Thread(daemon=True) 替代 plan 中的 ThreadPoolExecutor。
+    Python 3.14 的 ThreadPoolExecutor 不再接受 daemon_threads kwarg；
+    且 with 语句 __exit__ 会 shutdown(wait=True) 阻塞，即使 future 超时也会等 worker 结束。
+    daemon 线程超时后不阻塞进程退出。
+    """
+    import threading
+
+    result: list = []
+    exception: list[BaseException | None] = [None]
+
+    def _worker() -> None:
+        try:
+            result.append(_fetch_history_sina(ak, code, start_date, end_date))
+        except BaseException as exc:  # noqa: BLE001 - 透传给调用方
+            exception[0] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+
+    if thread.is_alive():
+        raise RuntimeError(f"sina timed out after {timeout}s")
+    if exception[0] is not None:
+        raise exception[0]
+    if not result:
+        raise RuntimeError("sina worker returned no result")
+    return result[0]
 
 
 def _fetch_history_sina(ak: Any, code: str, start_date: str, end_date: str) -> pd.DataFrame:

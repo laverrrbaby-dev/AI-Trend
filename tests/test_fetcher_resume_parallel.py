@@ -203,7 +203,8 @@ class FetcherResumeParallelTests(unittest.TestCase):
 
             self.assertEqual(fake_ak.history_calls, ["159995"])
 
-    def test_history_fetch_retries_after_transient_error(self) -> None:
+    def test_history_fetch_no_retry_on_transient_error(self) -> None:
+        """R2: eastmoney 单次尝试失败 → 不重试，记录错误（不再重试 2 次）"""
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
             data_date = "2026-05-29"
@@ -212,14 +213,14 @@ class FetcherResumeParallelTests(unittest.TestCase):
             with patch("trend_radar.fetcher.time.sleep"):
                 result = self._fetch(fake_ak, data_date, root=root, codes=["159995"], resume=True, max_workers=1)
 
-            self.assertEqual(fake_ak.history_calls, ["159995", "159995"])
-            self.assertEqual(result.errors, [])
-            self.assertTrue((root / "data" / "normalized" / data_date / "history" / "159995.csv").exists())
+            # eastmoney 只调用 1 次（不再重试 2 次）
+            self.assertEqual(fake_ak.history_calls, ["159995"])
+            # 单次失败后不再重试 → 记录错误
+            self.assertTrue(any("159995" in str(e) for e in result.errors))
             report = self._read_report(root, data_date)
             self.assertEqual(report["history_total"], 1)
-            self.assertEqual(report["history_success"], 1)
-            self.assertEqual(report["history_failed"], 0)
-            self.assertEqual(report["fetched_history_files"], 1)
+            self.assertEqual(report["history_failed"], 1)
+            self.assertEqual(report["history_success"], 0)
 
     def test_resume_retry_only_fetches_missing_history(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

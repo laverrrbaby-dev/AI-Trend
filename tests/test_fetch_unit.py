@@ -245,22 +245,56 @@ class TestMultiSourceFallback(unittest.TestCase):
             self.assertIn("All sources exhausted", str(ctx.exception))
             self.assertIn("sina", str(ctx.exception))
 
-    def test_retries_eastmoney_twice(self):
+    def test_eastmoney_single_attempt_falls_to_sina(self):
+        """R2: eastmoney 单次尝试失败 → sina 兜底（不再重试 2 次）"""
         call_count = [0]
 
-        def fail_then_succeed(*args, **kwargs):
+        def urlopen_fail(*args, **kwargs):
             call_count[0] += 1
-            if call_count[0] < 2:
-                raise ConnectionError("blocked")
-            return _make_mock_urlopen(EASTMONEY_KLINES)
+            raise ConnectionError("blocked")
 
         with (
-            patch("urllib.request.urlopen", side_effect=fail_then_succeed),
+            patch("urllib.request.urlopen", side_effect=urlopen_fail),
             patch("trend_radar.fetcher._fetch_history_eastmoney_curl", side_effect=RuntimeError("curl down")),
         ):
+            sina_df = pd.DataFrame({
+                "date": [date.fromisoformat("2026-05-22")],
+                "open": [3.43],
+                "high": [3.48],
+                "low": [3.44],
+                "close": [3.45],
+                "volume": [10000000],
+            })
+            self.mock_ak.fund_etf_hist_sina.return_value = sina_df
+
             df = _fetch_history(self.mock_ak, "510050", "20260522", "20260529")
-            self.assertEqual(len(df), 7)
-            self.assertEqual(call_count[0], 2)
+            self.assertEqual(len(df), 1)
+            # eastmoney urllib 只调用 1 次（不再重试）
+            self.assertEqual(call_count[0], 1)
+            self.mock_ak.fund_etf_hist_sina.assert_called_once()
+
+
+class TestSinaTimeout(unittest.TestCase):
+    def test_sina_call_timeout_records_error(self) -> None:
+        """R2: sina 调用超时 → 记为 error，不阻塞"""
+        from trend_radar.fetcher import _fetch_history_with_attempt_details
+        import time
+
+        # akshare sina 接口模拟永久阻塞
+        blocking_ak = MagicMock()
+        def blocking_sina(*args, **kwargs):
+            time.sleep(30)  # 模拟阻塞
+        blocking_ak.fund_etf_hist_sina = blocking_sina
+
+        # urllib 和 curl 都失败，sina 阻塞
+        with patch("trend_radar.fetcher._fetch_history_eastmoney_with_provider", side_effect=RuntimeError("eastmoney down")):
+            start = time.time()
+            with self.assertRaises(RuntimeError) as ctx:
+                _fetch_history_with_attempt_details(blocking_ak, "159995", "20260522", "20260529")
+            elapsed = time.time() - start
+            # 应在 ~10s 内超时（不是 30s）
+            self.assertLess(elapsed, 15, f"sina should timeout, not block; elapsed={elapsed}")
+            self.assertIn("sina", str(ctx.exception).lower())
 
 
 if __name__ == "__main__":
