@@ -22,6 +22,7 @@ from .config import (
     DEFAULT_HISTORY_FETCH_MAX_WORKERS,
     MARKET_COMPLETE_TIME,
     PROJECT_ROOT,
+    PROBLEM_SUMMARY_CACHE_TTL_SECONDS,
     PROGRESS_WRITE_MIN_INTERVAL_SECONDS,
     ensure_data_dirs,
     now_shanghai,
@@ -250,6 +251,7 @@ def refresh_latest_data(
                 phase="done",
                 message=_refresh_success_message(target_date, final_actual_date, dates_to_refresh),
             )
+            _invalidate_problem_summary_cache()
             _write_status(root, result)
             return result
         except Exception as exc:  # noqa: BLE001 - status must preserve failures for the UI
@@ -360,6 +362,7 @@ def retry_selected_date(
                 phase="done",
                 message=_retry_success_message(root, target_date),
             )
+            _invalidate_problem_summary_cache()
             _write_status(root, result)
             return result
         except Exception as exc:  # noqa: BLE001 - status must preserve failures for the UI
@@ -489,6 +492,7 @@ def retry_problem_snapshots(
                 radar_csv=Path(scored_results[-1].radar_csv) if scored_results else None,
                 radar_json=Path(scored_results[-1].radar_json) if scored_results else None,
             )
+            _invalidate_problem_summary_cache()
             _write_status(root, result)
             return result
         except Exception as exc:  # noqa: BLE001 - status must preserve failures for the UI
@@ -555,13 +559,54 @@ def scan_problem_snapshots(root: Path = PROJECT_ROOT) -> list[ProblemSnapshot]:
     return problems
 
 
+# R5: 模块级缓存
+_problem_summary_cache: dict[str, Any] | None = None
+_problem_summary_cache_key: tuple | None = None
+_problem_summary_cache_ts: float = 0.0
+
+
+def _problem_summary_cache_key_for(root: Path) -> tuple:
+    """R5: 基于 normalized 目录 max child mtime + 子目录数量的缓存 key。"""
+    normalized_dir = root / "data" / "normalized"
+    if not normalized_dir.exists():
+        return (0, 0)
+    children = [child for child in normalized_dir.iterdir() if child.is_dir()]
+    if not children:
+        return (0, 0)
+    max_mtime = max(child.stat().st_mtime_ns for child in children)
+    return (max_mtime, len(children))
+
+
+def _invalidate_problem_summary_cache() -> None:
+    """R5: refresh 完成时调用，清除缓存。"""
+    global _problem_summary_cache, _problem_summary_cache_key, _problem_summary_cache_ts
+    _problem_summary_cache = None
+    _problem_summary_cache_key = None
+    _problem_summary_cache_ts = 0.0
+
+
 def problem_snapshot_summary(root: Path = PROJECT_ROOT) -> dict[str, Any]:
+    global _problem_summary_cache, _problem_summary_cache_key, _problem_summary_cache_ts
+
+    cache_key = _problem_summary_cache_key_for(root)
+    now_mono = time.monotonic()
+    # R5: 命中缓存（key 一致 + TTL 内）
+    if (
+        _problem_summary_cache is not None
+        and _problem_summary_cache_key == cache_key
+        and (now_mono - _problem_summary_cache_ts) < PROBLEM_SUMMARY_CACHE_TTL_SECONDS
+    ):
+        return _problem_summary_cache
+
     problems = scan_problem_snapshots(root)
-    return {
+    _problem_summary_cache = {
         "snapshot_count": len(problems),
         "problem_count": int(sum(problem.problem_count for problem in problems)),
         "dates": [problem.data_date for problem in problems],
     }
+    _problem_summary_cache_key = cache_key
+    _problem_summary_cache_ts = now_mono
+    return _problem_summary_cache
 
 
 def read_refresh_status(root: Path = PROJECT_ROOT) -> dict[str, Any]:

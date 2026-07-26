@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -725,6 +726,105 @@ class ProgressSpeedEtaTests(unittest.TestCase):
         self.assertAlmostEqual(payload["speed"], 5.0, places=1)
         # eta = (600 - 100) / 5 = 100
         self.assertAlmostEqual(payload["eta_seconds"], 100.0, places=1)
+
+
+class ProblemSummaryCacheTests(unittest.TestCase):
+    """R5: problem_snapshot_summary 缓存测试。
+
+    不继承 RefreshTests（避免运行父类测试），inline 定义需要的 helper。
+    """
+
+    def _saturday(self) -> datetime:
+        return datetime(2026, 5, 30, 10, 0, tzinfo=ASIA_SHANGHAI)
+
+    def _write_history(self, root: Path, source_date: str, latest_date: str) -> None:
+        history_dir = root / "data" / "normalized" / source_date / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        dates = pd.bdate_range(end=pd.Timestamp(latest_date), periods=3)
+        pd.DataFrame({"日期": dates}).to_csv(history_dir / "159995.csv", index=False)
+
+    def _write_radar(self, root: Path, data_date: str, source_date: str | None = None) -> SimpleNamespace:
+        radar_dir = root / "data" / "radar"
+        radar_dir.mkdir(parents=True, exist_ok=True)
+        radar_csv = radar_dir / f"{data_date}.csv"
+        radar_json = radar_dir / f"{data_date}.json"
+        radar_csv.write_text("排名,ETF名称,代码\n1,芯片ETF,159995\n", encoding="utf-8")
+        radar_json.write_text(
+            json.dumps({"data_date": data_date, "source_date": source_date or data_date, "generated_at": f"{data_date} 16:00:00"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(data_date=data_date, radar_csv=radar_csv, radar_json=radar_json)
+
+    def test_cache_hit_skips_rescan(self) -> None:
+        """R5: mtime 不变 → 命中缓存，scan_problem_snapshots 只调用 1 次"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            self._write_history(root, data_date, data_date)
+
+            scan_count = [0]
+            original_scan = scan_problem_snapshots
+            def counting_scan(r=root):
+                scan_count[0] += 1
+                return original_scan(r)
+
+            with patch("trend_radar.refresh.scan_problem_snapshots", side_effect=counting_scan):
+                # 同一进程内连续两次 summary，应命中缓存
+                import trend_radar.refresh as refresh_mod
+                # 强制重置缓存
+                if hasattr(refresh_mod, "_problem_summary_cache"):
+                    refresh_mod._problem_summary_cache = None
+                summary1 = refresh_mod.problem_snapshot_summary(root)
+                summary2 = refresh_mod.problem_snapshot_summary(root)
+
+            self.assertEqual(scan_count[0], 1, "second call should hit cache")
+
+    def test_cache_invalidated_on_mtime_change(self) -> None:
+        """R5: normalized 目录 mtime 变 → 重算"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            self._write_history(root, data_date, data_date)
+
+            import trend_radar.refresh as refresh_mod
+            if hasattr(refresh_mod, "_problem_summary_cache"):
+                refresh_mod._problem_summary_cache = None
+            summary1 = refresh_mod.problem_snapshot_summary(root)
+
+            # 新增子目录改变 mtime
+            new_dir = root / "data" / "normalized" / "2026-05-30"
+            new_dir.mkdir(parents=True)
+            (new_dir / "spot_candidates.csv").write_text("code\n510300\n", encoding="utf-8")
+            time.sleep(0.01)  # 确保 mtime 变化
+
+            summary2 = refresh_mod.problem_snapshot_summary(root)
+            # 应重新扫描（缓存失效）
+            self.assertNotEqual(id(summary1), id(summary2))
+
+    def test_cache_invalidated_by_refresh_completion(self) -> None:
+        """R5: refresh 完成后 → 缓存失效"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            self._write_history(root, data_date, data_date)
+
+            import trend_radar.refresh as refresh_mod
+            if hasattr(refresh_mod, "_problem_summary_cache"):
+                refresh_mod._problem_summary_cache = None
+            summary1 = refresh_mod.problem_snapshot_summary(root)
+            self.assertIsNotNone(refresh_mod._problem_summary_cache)
+
+            # 模拟 refresh 完成
+            def fake_fetcher(data_date: str, root: Path, **kwargs: object) -> object:
+                self._write_history(root, data_date, data_date)
+                return SimpleNamespace(data_date=data_date)
+            def fake_scorer(data_date: str, root: Path, source_date: str | None = None) -> object:
+                return self._write_radar(root, data_date)
+
+            refresh_mod.refresh_latest_data(root=root, now=self._saturday(), fetcher=fake_fetcher, scorer=fake_scorer)
+
+            # refresh 后缓存应被清除
+            self.assertIsNone(refresh_mod._problem_summary_cache)
 
 
 if __name__ == "__main__":
