@@ -941,6 +941,8 @@ def _progress_from_callback(progress: dict[str, Any]) -> dict[str, Any]:
         fetched=progress.get("fetched"),
         errors=progress.get("errors"),
         max_workers=progress.get("max_workers"),
+        phase_started_at=progress.get("phase_started_at"),
+        phase_elapsed_seconds=progress.get("phase_elapsed_seconds"),
     )
 
 
@@ -953,16 +955,32 @@ def _progress_payload(
     fetched: object | None = None,
     errors: object | None = None,
     max_workers: object | None = None,
+    phase_started_at: str | None = None,
+    phase_elapsed_seconds: float | None = None,
 ) -> dict[str, Any]:
+    completed_int = _safe_int(completed)
+    total_int = _safe_int(total)
+    elapsed = float(phase_elapsed_seconds) if phase_elapsed_seconds is not None else 0.0
+    # R6: speed = completed / max(elapsed, 1)，避免 cache hit 拉高速度
+    speed = completed_int / max(elapsed, 1.0) if elapsed > 0 else 0.0
+    # R6: eta = (total - completed) / max(speed, 0.01)
+    remaining = max(0, total_int - completed_int)
+    eta_seconds = remaining / max(speed, 0.01) if speed > 0 else 0.0
+
     payload: dict[str, Any] = {
-        "completed": _safe_int(completed),
-        "total": _safe_int(total),
+        "completed": completed_int,
+        "total": total_int,
         "current_code": _optional_str(current_code),
         "current_name": _optional_str(current_name),
         "skipped_cached": _safe_int(skipped_cached),
         "fetched": _safe_int(fetched),
         "errors": _safe_int(errors),
         "max_workers": _safe_int(max_workers),
+        # R6: 新增字段（additive，向后兼容）
+        "phase_started_at": phase_started_at,
+        "phase_elapsed_seconds": round(elapsed, 2),
+        "speed": round(speed, 2),
+        "eta_seconds": round(eta_seconds, 2),
     }
     return payload
 
@@ -1004,17 +1022,28 @@ class _ProgressWriter:
         self._last_write_time = 0.0
         self._last_phase: str | None = None
         self._fallback_error: Exception | None = None
+        self._phase_started_at: dict[str, float] = {}  # phase -> monotonic time
+        self._phase_timestamp: dict[str, str] = {}  # phase -> wall clock ISO
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="trend-radar-progress-writer", daemon=True)
         self._thread.start()
 
     def submit(self, progress: dict[str, Any], phase: str, message: str) -> None:
-        """非阻塞入队。"""
+        """非阻塞入队，记录 phase 开始时间。"""
+        now_mono = time.monotonic()
+        if phase not in self._phase_started_at:
+            self._phase_started_at[phase] = now_mono
+            self._phase_timestamp[phase] = _timestamp()
+        elapsed = now_mono - self._phase_started_at.get(phase, now_mono)
+        # 注入到 progress 供 _progress_payload 使用
+        enriched = dict(progress)
+        enriched["phase_started_at"] = self._phase_timestamp.get(phase)
+        enriched["phase_elapsed_seconds"] = elapsed
         try:
-            self._queue.put_nowait((progress, phase, message))
+            self._queue.put_nowait((enriched, phase, message))
         except queue.Full:
-            pass  # 丢弃旧进度，不影响主流程
+            pass
 
     def join(self, timeout: float = 2.0) -> None:
         """停止并等待线程结束，确保最后一条状态写入。"""

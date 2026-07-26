@@ -704,5 +704,28 @@ class ProgressWriterDebounceTests(unittest.TestCase):
                 self.assertIn(1, completed_values, "fetch progress completed=1 should be written")
 
 
+class ProgressSpeedEtaTests(unittest.TestCase):
+    def test_progress_payload_includes_speed_eta(self) -> None:
+        """R6: progress 包含 speed/eta_seconds/phase_started_at/phase_elapsed_seconds"""
+        from trend_radar.refresh import _progress_payload
+
+        payload = _progress_payload(
+            completed=100, total=600,
+            current_code="159995", current_name="测试",
+            skipped_cached=80, fetched=20, errors=0, max_workers=20,
+            phase_started_at="2026-07-26 10:00:00",
+            phase_elapsed_seconds=20.0,
+        )
+
+        self.assertIn("speed", payload)
+        self.assertIn("eta_seconds", payload)
+        self.assertIn("phase_started_at", payload)
+        self.assertIn("phase_elapsed_seconds", payload)
+        # speed = 100 / 20 = 5.0
+        self.assertAlmostEqual(payload["speed"], 5.0, places=1)
+        # eta = (600 - 100) / 5 = 100
+        self.assertAlmostEqual(payload["eta_seconds"], 100.0, places=1)
+
+
 if __name__ == "__main__":
     unittest.main()

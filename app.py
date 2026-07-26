@@ -936,6 +936,13 @@ def _running_refresh_message(target_date: str, phase: str, progress: dict[str, A
     errors = _safe_int(progress.get("errors"))
     max_workers = _safe_int(progress.get("max_workers"))
     current_code = str(progress.get("current_code") or "").strip()
+    speed = _safe_float(progress.get("speed"))
+    eta_seconds = _safe_float(progress.get("eta_seconds"))
+
+    # R6: speed/ETA 后缀（仅当有意义时显示）
+    speed_eta_suffix = ""
+    if speed > 0 and eta_seconds > 0:
+        speed_eta_suffix = f"，{speed:.1f} 码/秒，预计 {int(eta_seconds)}s"
     if phase == "retry_scan":
         return "正在扫描存量问题..."
     if phase == "retry_fetch_history" and total:
@@ -947,34 +954,34 @@ def _running_refresh_message(target_date: str, phase: str, progress: dict[str, A
         current = f"，当前 {current_code}" if current_code else ""
         return (
             f"正在补拉存量问题：{date_prefix}，历史行情 {completed}/{total}，"
-            f"缓存 {skipped_cached}，新拉取 {fetched}，失败 {errors}{workers}{current}"
+            f"缓存 {skipped_cached}，新拉取 {fetched}，失败 {errors}{workers}{current}{speed_eta_suffix}"
         )
     if phase == "retry_fetch_scale":
         source_date = str(progress.get("current_source_date") or "").strip()
-        return f"正在补拉存量问题：{source_date} 份额数据..."
+        return f"正在补拉存量问题：{source_date} 份额数据...{speed_eta_suffix}"
     if phase == "retry_score":
         score_completed = _safe_int(progress.get("score_completed", completed))
         score_total = _safe_int(progress.get("score_total", total))
         score_date = str(progress.get("current_score_date") or "").strip()
         current = f"，当前 {score_date}" if score_date else ""
-        return f"正在重算关联排行榜：{score_completed}/{score_total}{current}"
+        return f"正在重算关联排行榜：{score_completed}/{score_total}{current}{speed_eta_suffix}"
     if phase == "fetch_spot":
-        return f"正在更新 {target_date} 数据：拉取候选池..."
+        return f"正在更新 {target_date} 数据：拉取候选池...{speed_eta_suffix}"
     if phase == "fetch_history" and total:
         if skipped_cached or fetched or errors or max_workers > 1:
             workers = f"，并发 {max_workers}" if max_workers else ""
             current = f"，当前 {current_code}" if current_code else ""
             return (
                 f"正在更新 {target_date} 数据：历史行情 {completed}/{total}，"
-                f"缓存 {skipped_cached}，新拉取 {fetched}，失败 {errors}{workers}{current}"
+                f"缓存 {skipped_cached}，新拉取 {fetched}，失败 {errors}{workers}{current}{speed_eta_suffix}"
             )
         current = f"，当前 {current_code}" if current_code else ""
-        return f"正在更新 {target_date} 数据：历史行情 {completed}/{total}{current}"
+        return f"正在更新 {target_date} 数据：历史行情 {completed}/{total}{current}{speed_eta_suffix}"
     if phase == "fetch_scale":
-        return f"正在更新 {target_date} 数据：拉取份额数据..."
+        return f"正在更新 {target_date} 数据：拉取份额数据...{speed_eta_suffix}"
     if phase == "score":
-        return f"正在更新 {target_date} 数据：生成评分..."
-    return f"正在更新 {target_date} 数据..."
+        return f"正在更新 {target_date} 数据：生成评分...{speed_eta_suffix}"
+    return f"正在更新 {target_date} 数据...{speed_eta_suffix}"
 
 
 def _refresh_progress_is_stale(updated_at: str, now: datetime | None = None) -> bool:
@@ -993,6 +1000,13 @@ def _safe_int(value: object) -> int:
         return int(value) if value is not None else 0
     except (TypeError, ValueError):
         return 0
+
+
+def _safe_float(value: object) -> float:
+    try:
+        return float(value) if value is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _apply_pending_selected_date(dates: list[str]) -> None:
