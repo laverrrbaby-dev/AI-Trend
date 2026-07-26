@@ -879,7 +879,7 @@ def _write_status(root: Path, result: RefreshResult, traceback_text: str | None 
     payload = result.to_payload()
     if traceback_text:
         payload["traceback"] = traceback_text
-    temp_path = path.with_name(f"{path.name}.tmp")
+    temp_path = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temp_path.replace(path)
 
