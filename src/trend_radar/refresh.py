@@ -177,14 +177,19 @@ def refresh_latest_data(
                         ),
                     )
 
-                fetcher(
+                fetch_result = fetcher(
                     data_date=refresh_date,
                     root=root,
                     progress_callback=progress_callback,
                     resume=not force,
                     max_workers=DEFAULT_HISTORY_FETCH_MAX_WORKERS,
                 )
-                actual_date = _detect_complete_history_date(root, refresh_date) or refresh_date
+                # R3: 复用 fetch 阶段已收集的 date_counts，避免全量重读
+                fetch_date_counts = getattr(fetch_result, "date_counts", None) if fetch_result else None
+                actual_date = (
+                    _detect_complete_history_date(root, refresh_date, date_counts=fetch_date_counts)
+                    or refresh_date
+                )
                 source_date = refresh_date if actual_date != refresh_date else None
                 _write_status(
                     root,
@@ -608,7 +613,28 @@ def _detect_complete_history_date(
     root: Path,
     source_date: str,
     min_coverage_ratio: float = HISTORY_COMPLETE_COVERAGE_RATIO,
+    date_counts: dict[str, int] | None = None,
 ) -> str | None:
+    """检测完整历史覆盖的最新日期。
+
+    R3 优化：传入 date_counts 时走快速路径（0 文件读），否则回退全量重读。
+    """
+    # R3 快速路径：使用 fetch 阶段已维护的 date_counts
+    if date_counts is not None:
+        if not date_counts:
+            return None
+        candidate_codes = _candidate_codes(root, source_date)
+        denominator = len(candidate_codes) if candidate_codes else max(date_counts.values())
+        if not denominator:
+            return None
+        min_count = max(1, int(denominator * min_coverage_ratio + 0.999999))
+        complete_dates = sorted(d for d, c in date_counts.items() if c >= min_count)
+        if complete_dates:
+            return complete_dates[-1]
+        best_date = max(date_counts, key=lambda d: (date_counts[d], d))
+        return best_date
+
+    # 慢速路径：当前实现（保底，向后兼容）
     history_dir = root / "data" / "normalized" / source_date / "history"
     if not history_dir.exists():
         return None
@@ -616,7 +642,7 @@ def _detect_complete_history_date(
     target = pd.Timestamp(source_date)
     candidate_codes = _candidate_codes(root, source_date)
     history_codes: set[str] = set()
-    date_counts: dict[str, int] = {}
+    file_date_counts: dict[str, int] = {}
     for path in sorted(history_dir.glob("*.csv")):
         code = path.stem.zfill(6)
         if candidate_codes and code not in candidate_codes:
@@ -631,16 +657,16 @@ def _detect_complete_history_date(
             continue
         history_codes.add(code)
         for item in dates.dt.date.astype(str).unique():
-            date_counts[str(item)] = date_counts.get(str(item), 0) + 1
+            file_date_counts[str(item)] = file_date_counts.get(str(item), 0) + 1
 
     denominator = len(candidate_codes) if candidate_codes else len(history_codes)
-    if not denominator or not date_counts:
+    if not denominator or not file_date_counts:
         return None
     min_count = max(1, int(denominator * min_coverage_ratio + 0.999999))
-    complete_dates = sorted(date_key for date_key, count in date_counts.items() if count >= min_count)
+    complete_dates = sorted(date_key for date_key, count in file_date_counts.items() if count >= min_count)
     if complete_dates:
         return complete_dates[-1]
-    best_date = max(date_counts, key=lambda date_key: (date_counts[date_key], date_key))
+    best_date = max(file_date_counts, key=lambda date_key: (file_date_counts[date_key], date_key))
     return best_date
 
 

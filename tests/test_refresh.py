@@ -8,6 +8,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -21,6 +22,7 @@ from trend_radar.refresh import (  # noqa: E402
     REFRESH_RUNNING,
     REFRESH_SKIPPED,
     REFRESH_SUCCEEDED,
+    _detect_complete_history_date,
     problem_snapshot_summary,
     read_refresh_status,
     refresh_latest_data,
@@ -546,6 +548,46 @@ class RefreshTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+
+
+class DetectCompleteDateCountsTests(unittest.TestCase):
+    """R3: _detect_complete_history_date 复用 date_counts 测试。
+
+    不继承 RefreshTests（避免运行父类测试），inline 定义需要的 helper。
+    """
+
+    def _write_history(self, root: Path, source_date: str, latest_date: str) -> None:
+        history_dir = root / "data" / "normalized" / source_date / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        dates = pd.bdate_range(end=pd.Timestamp(latest_date), periods=3)
+        pd.DataFrame({"日期": dates}).to_csv(history_dir / "159995.csv", index=False)
+
+    def test_detect_complete_reuses_date_counts_no_file_read(self) -> None:
+        """R3: 传入 date_counts → 0 文件读"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            self._write_history(root, data_date, data_date)
+
+            date_counts = {"2026-05-29": 1, "2026-05-28": 1}
+            with patch(
+                "trend_radar.refresh.pd.read_csv",
+                new=MagicMock(side_effect=AssertionError("should not read csv")),
+            ):
+                result = _detect_complete_history_date(root, data_date, date_counts=date_counts)
+            # 不应调用 pd.read_csv
+            self.assertEqual(result, "2026-05-29")
+
+    def test_detect_complete_no_date_counts_falls_back_to_file_read(self) -> None:
+        """R3: 不传入 date_counts → 保持全量重读行为"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            self._write_history(root, data_date, data_date)
+
+            result = _detect_complete_history_date(root, data_date, date_counts=None)
+
+            self.assertEqual(result, "2026-05-29")
 
 
 if __name__ == "__main__":
