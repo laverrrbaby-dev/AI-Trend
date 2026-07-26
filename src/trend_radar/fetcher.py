@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import importlib
 import json
 import os
@@ -1157,7 +1158,13 @@ def _load_akshare() -> Any:
 
 def _call_akshare(ak: Any, function_name: str, **kwargs: Any) -> pd.DataFrame:
     function = getattr(ak, function_name)
-    result = function(**kwargs)
+    # akshare internals (e.g. fetch_paginated_data) construct a tqdm progress bar
+    # that writes to sys.stderr. When this runs in a Streamlit background thread,
+    # sys.stderr is a context-bound stream that becomes invalid on script rerun,
+    # causing tqdm's flush() to raise OSError [Errno 5] Input/output error.
+    # Redirect stderr to devnull so tqdm always writes to a healthy fd.
+    with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
+        result = function(**kwargs)
     if not isinstance(result, pd.DataFrame):
         raise TypeError(f"akshare.{function_name} returned {type(result)!r}, expected pandas.DataFrame")
     return result
@@ -1367,7 +1374,7 @@ def _fetch_history_sina_with_timeout(
 
 def _fetch_history_sina(ak: Any, code: str, start_date: str, end_date: str) -> pd.DataFrame:
     prefix = "sh" if code.startswith("5") else "sz"
-    raw = ak.fund_etf_hist_sina(symbol=f"{prefix}{code}")
+    raw = _call_akshare(ak, "fund_etf_hist_sina", symbol=f"{prefix}{code}")
     if raw.empty:
         return pd.DataFrame(columns=_HISTORY_API_COLUMNS)
 

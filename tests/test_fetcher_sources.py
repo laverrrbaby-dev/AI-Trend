@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from trend_radar.fetcher import (  # noqa: E402
     _HISTORY_API_COLUMNS,
+    _call_akshare,
     _fetch_history_eastmoney_with_provider,
 )
 
@@ -75,6 +76,74 @@ class FetcherSourcesTests(unittest.TestCase):
 
         self.assertIn("urllib failed", str(context.exception))
         self.assertIn("curl failed", str(context.exception))
+
+
+class _BrokenStderr:
+    """Simulates Streamlit's invalidated stderr (closed pipe → EIO on flush)."""
+
+    def write(self, _s: str) -> int:
+        raise OSError(5, "Input/output error")
+
+    def flush(self) -> None:
+        raise OSError(5, "Input/output error")
+
+    def fileno(self) -> int:
+        return 2
+
+    def writable(self) -> bool:
+        return True
+
+    def isatty(self) -> bool:
+        return False
+
+
+class CallAkshareStderrProtectionTests(unittest.TestCase):
+    """Regression: akshare uses tqdm which writes to sys.stderr. In a Streamlit
+    background thread sys.stderr is a context-bound stream that becomes invalid
+    on script rerun, causing tqdm's flush() to raise OSError [Errno 5].
+    _call_akshare must redirect stderr so the call survives."""
+
+    def test_call_akshare_survives_broken_stderr(self) -> None:
+        original_stderr = sys.stderr
+
+        def _tqdm_like(**_kwargs: object) -> pd.DataFrame:
+            # Mimic akshare's internal tqdm writing to sys.stderr
+            sys.stderr.write("progress")
+            sys.stderr.flush()
+            return pd.DataFrame({"code": ["510050"], "name": ["t"]})
+
+        ak = MagicMock()
+        ak.fund_etf_spot_em = _tqdm_like
+
+        try:
+            sys.stderr = _BrokenStderr()
+            frame = _call_akshare(ak, "fund_etf_spot_em")
+        finally:
+            sys.stderr = original_stderr
+
+        self.assertEqual(len(frame), 1)
+        # stderr must be restored to the caller's (broken) value after the call
+        self.assertIs(sys.stderr, original_stderr)
+
+    def test_call_akshare_restores_stderr_even_on_failure(self) -> None:
+        original_stderr = sys.stderr
+
+        def _boom(**_kwargs: object) -> pd.DataFrame:
+            sys.stderr.write("progress")
+            sys.stderr.flush()
+            raise RuntimeError("akshare failed")
+
+        ak = MagicMock()
+        ak.fund_etf_spot_em = _boom
+
+        try:
+            sys.stderr = _BrokenStderr()
+            with self.assertRaises(RuntimeError):
+                _call_akshare(ak, "fund_etf_spot_em")
+        finally:
+            sys.stderr = original_stderr
+
+        self.assertIs(sys.stderr, original_stderr)
 
 
 if __name__ == "__main__":
