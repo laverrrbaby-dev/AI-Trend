@@ -187,6 +187,7 @@ class AuditTests(unittest.TestCase):
                     "成交额(亿)": [amount] * 130,
                     "成交量": [10000 * index] * 130,
                     "涨跌幅": [0.1] * 130,
+                    "history_source": ["fixture"] * 130,
                 }
             ).to_csv(history_dir / f"{code}.csv", index=False)
 
@@ -203,6 +204,23 @@ class AuditTests(unittest.TestCase):
                     }
                 )
         pd.DataFrame(share_rows).to_csv(normalized / "shares.csv", index=False)
+        report = {
+            "data_date": data_date,
+            "history_provider_counts": {"fixture": len(codes)},
+            "history_outcomes": [
+                {
+                    "code": code,
+                    "name": name,
+                    "status": "cached",
+                    "rows": 130,
+                    "provider": "fixture",
+                    "latest_date": data_date,
+                    "stale": False,
+                }
+                for code, name in zip(codes, names, strict=True)
+            ],
+        }
+        (normalized / "fetch_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _raw_history(self, data_date: str, code: str, amount_yi: float) -> pd.DataFrame:
         dates = pd.bdate_range(end=pd.Timestamp(data_date), periods=130)

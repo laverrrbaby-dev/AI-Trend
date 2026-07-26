@@ -12,6 +12,7 @@ import pandas as pd
 from .config import PROJECT_ROOT, now_shanghai
 from .filters import EXCLUDE_CODE_PREFIXES
 from .scoring import DETAIL_HISTORY_COLUMNS, SCORE_COLUMNS, build_changes_from_frames
+from .scoring import _history_source_label, _share_source_label  # noqa: PLC2701 - validation must mirror scoring labels
 from .ui_data import build_price_history, get_available_dates, load_snapshot
 
 
@@ -58,6 +59,7 @@ def validate_outputs(start: str, end: str, root: Path = PROJECT_ROOT) -> Validat
         _validate_required_columns(frame, data_date, errors)
         _validate_basic_frame(frame, data_date, errors)
         _validate_metadata(frame, metadata, root, data_date, errors)
+        _validate_quality_sources(frame, metadata, root, data_date, errors, warnings)
         _validate_ui_backend(root, frame, data_date, errors, warnings)
 
     report = {
@@ -151,6 +153,130 @@ def _validate_metadata(frame: pd.DataFrame, metadata: dict[str, Any], root: Path
     expected_changes = build_changes_from_frames(frame, previous)
     if metadata.get("changes") != expected_changes:
         errors.append(f"{data_date}: JSON changes do not match previous radar output")
+
+
+def _validate_quality_sources(
+    frame: pd.DataFrame,
+    metadata: dict[str, Any],
+    root: Path,
+    data_date: str,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    required = {"数据置信度", "行情来源", "份额来源", "数据问题", "数据质量"}
+    if not required.issubset(frame.columns):
+        return
+
+    confidence = frame["数据置信度"].astype(str)
+    bad_confidence = sorted(set(confidence) - {"高", "中", "低"})
+    if bad_confidence:
+        errors.append(f"{data_date}: invalid 数据置信度 values {bad_confidence}")
+
+    source_date = str(metadata.get("source_date") or data_date)
+    history_sources = _history_sources_from_report(root, source_date)
+    row_history_sources = _history_sources_from_history_files(root, source_date, data_date)
+    combined_history_sources = {**history_sources, **row_history_sources}
+    if combined_history_sources:
+        for _, row in frame.iterrows():
+            code = str(row["代码"]).zfill(6)
+            provider = combined_history_sources.get(code)
+            if provider is None:
+                continue
+            expected_source = _history_source_label(provider)
+            if str(row["行情来源"]) != expected_source:
+                errors.append(f"{data_date}: {code} 行情来源 {row['行情来源']} does not match fetch_report {expected_source}")
+            if provider == "spot_fallback":
+                if str(row["数据置信度"]) != "低":
+                    errors.append(f"{data_date}: {code} spot_fallback history must be low confidence")
+                if str(row["数据质量"]) == "完整":
+                    errors.append(f"{data_date}: {code} spot_fallback history must not be marked 完整")
+                if "历史行情补点" not in str(row["数据问题"]):
+                    errors.append(f"{data_date}: {code} spot_fallback history missing explicit data issue")
+            if provider == "sina":
+                if str(row["数据置信度"]) == "高":
+                    errors.append(f"{data_date}: {code} Sina fallback history must not be high confidence")
+                if str(row["数据质量"]) == "完整":
+                    errors.append(f"{data_date}: {code} Sina fallback history must not be marked 完整")
+                if "新浪" not in str(row["数据问题"]):
+                    errors.append(f"{data_date}: {code} Sina fallback history missing explicit data issue")
+    else:
+        warnings.append(f"{data_date}: fetch_report history_outcomes missing; cannot verify 行情来源")
+
+    share_sources = _latest_share_sources(root, source_date, data_date)
+    for _, row in frame.iterrows():
+        code = str(row["代码"]).zfill(6)
+        share_source = share_sources.get(code)
+        if not share_source:
+            continue
+        expected_share_source = _share_source_label(share_source)
+        if str(row["份额来源"]) != expected_share_source:
+            errors.append(f"{data_date}: {code} 份额来源 {row['份额来源']} does not match shares.csv {expected_share_source}")
+        if share_source == "spot_fallback" and str(row["数据质量"]) == "完整":
+            errors.append(f"{data_date}: {code} spot_fallback shares must not be marked 完整")
+
+
+def _history_sources_from_report(root: Path, source_date: str) -> dict[str, str]:
+    report = _read_json(root / "data" / "normalized" / source_date / "fetch_report.json", source_date, [])
+    outcomes = report.get("history_outcomes") if report else None
+    if not isinstance(outcomes, list):
+        return {}
+    sources: dict[str, str] = {}
+    for item in outcomes:
+        if not isinstance(item, dict):
+            continue
+        raw_code = str(item.get("code") or "").strip()
+        code = raw_code.zfill(6)
+        if len(code) == 6 and code.isdigit():
+            sources[code] = str(item.get("provider") or "unknown").strip() or "unknown"
+    return sources
+
+
+def _history_sources_from_history_files(root: Path, source_date: str, data_date: str) -> dict[str, str]:
+    history_dir = root / "data" / "normalized" / source_date / "history"
+    if not history_dir.exists():
+        return {}
+    sources: dict[str, str] = {}
+    target = pd.Timestamp(data_date)
+    for path in sorted(history_dir.glob("*.csv")):
+        code = path.stem.zfill(6)
+        try:
+            frame = pd.read_csv(path, usecols=lambda column: column in {"日期", "history_source"})
+        except (OSError, ValueError, pd.errors.EmptyDataError):
+            continue
+        if frame.empty or "history_source" not in frame:
+            continue
+        frame["日期"] = pd.to_datetime(frame.get("日期"), errors="coerce")
+        frame = frame[frame["日期"] <= target].dropna(subset=["日期"])
+        if frame.empty:
+            continue
+        values = frame["history_source"].fillna("").astype(str).str.strip()
+        if values.eq("spot_fallback").any():
+            sources[code] = "spot_fallback"
+            continue
+        non_empty = values[values != ""]
+        if not non_empty.empty:
+            sources[code] = str(non_empty.iloc[-1])
+    return sources
+
+
+def _latest_share_sources(root: Path, source_date: str, data_date: str) -> dict[str, str]:
+    path = root / "data" / "normalized" / source_date / "shares.csv"
+    if not path.exists():
+        return {}
+    try:
+        frame = pd.read_csv(path, dtype={"code": str})
+    except (OSError, ValueError, pd.errors.EmptyDataError):
+        return {}
+    required = {"code", "日期", "share_source"}
+    if frame.empty or not required.issubset(frame.columns):
+        return {}
+    frame["code"] = frame["code"].astype(str).str.zfill(6)
+    frame["日期"] = pd.to_datetime(frame["日期"], errors="coerce")
+    frame = frame[frame["日期"] <= pd.Timestamp(data_date)].dropna(subset=["日期"])
+    if frame.empty:
+        return {}
+    latest = frame.sort_values("日期").groupby("code", as_index=False).tail(1)
+    return dict(zip(latest["code"], latest["share_source"].fillna("unknown").astype(str), strict=True))
 
 
 def _validate_ui_backend(root: Path, frame: pd.DataFrame, data_date: str, errors: list[str], warnings: list[str]) -> None:

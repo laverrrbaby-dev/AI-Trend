@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "tests"))
 
-from helpers.data_factory import write_source_fixture  # noqa: E402
+from helpers.data_factory import DEFAULT_AMOUNTS, raw_history_frame, write_source_fixture  # noqa: E402
 from trend_radar.fetcher import _merge_share_sources, fetch_data  # noqa: E402
 from trend_radar.scoring import generate_scores  # noqa: E402
 
@@ -105,7 +105,7 @@ class DataPipelineContractsTests(unittest.TestCase):
             data_date = "2026-05-29"
             write_source_fixture(root, data_date=data_date, future_rows=5)
 
-            result = generate_scores(data_date, root=root)
+            result = generate_scores(data_date, root=root, cross_validate_top_pool=False)
 
             self.assertEqual(result.rows, 5)
             radar = pd.read_csv(result.radar_csv, dtype={"代码": str})
@@ -120,6 +120,102 @@ class DataPipelineContractsTests(unittest.TestCase):
 
             payload = json.loads(result.radar_json.read_text(encoding="utf-8"))
             self.assertEqual(payload["data_quality"]["status"], "OK")
+
+    def test_spot_fallback_history_is_low_confidence_and_explained(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            write_source_fixture(root, data_date=data_date, history_provider="spot_fallback")
+
+            result = generate_scores(data_date, root=root, cross_validate_top_pool=False)
+            radar = pd.read_csv(result.radar_csv, dtype={"代码": str})
+
+            self.assertEqual(set(radar["数据置信度"]), {"低"})
+            self.assertNotIn("完整", set(radar["数据质量"]))
+            self.assertTrue(radar["数据问题"].str.contains("历史行情补点来自实时行情快照").all())
+            payload = json.loads(result.radar_json.read_text(encoding="utf-8"))
+            self.assertEqual(payload["data_quality"]["low_confidence_rows"], len(radar))
+            self.assertGreater(payload["data_quality"]["top10_low_confidence_rows"], 0)
+
+    def test_trusted_history_source_stays_high_confidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            write_source_fixture(root, data_date=data_date, history_provider="fixture")
+
+            result = generate_scores(data_date, root=root)
+            radar = pd.read_csv(result.radar_csv, dtype={"代码": str})
+
+            self.assertEqual(set(radar["数据置信度"]), {"高"})
+            self.assertEqual(set(radar["数据质量"]), {"完整"})
+            self.assertEqual(set(radar["数据问题"]), {"无"})
+
+    def test_sina_history_source_is_medium_confidence_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            write_source_fixture(root, data_date=data_date, history_provider="sina")
+
+            result = generate_scores(data_date, root=root, cross_validate_top_pool=False)
+            radar = pd.read_csv(result.radar_csv, dtype={"代码": str})
+
+            self.assertEqual(set(radar["数据置信度"]), {"中"})
+            self.assertEqual(set(radar["行情来源"]), {"新浪兜底行情"})
+            self.assertNotIn("完整", set(radar["数据质量"]))
+            self.assertTrue(radar["数据问题"].str.contains("东方财富历史行情暂不可用，使用新浪兜底").all())
+
+    def test_top_pool_cross_validation_replaces_sina_with_eastmoney_when_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            fixture = write_source_fixture(root, data_date=data_date, history_provider="sina")
+
+            def fake_eastmoney(code: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
+                return raw_history_frame(data_date, code, DEFAULT_AMOUNTS.get(code, 5.0)), "eastmoney_urllib"
+
+            with patch("trend_radar.fetcher._fetch_history_eastmoney_with_provider", side_effect=fake_eastmoney):
+                result = generate_scores(data_date, root=root)
+
+            radar = pd.read_csv(result.radar_csv, dtype={"代码": str})
+            top_codes = radar.head(10)["代码"].astype(str).str.zfill(6).tolist()
+            checked = radar[radar["代码"].astype(str).str.zfill(6).isin(top_codes)]
+            self.assertTrue((checked["行情来源"] == "东方财富历史行情").all())
+            self.assertTrue((checked["数据置信度"] == "高").all())
+            history = pd.read_csv(fixture.history_dir / f"{top_codes[0]}.csv")
+            self.assertEqual(set(history["history_source"]), {"eastmoney_urllib"})
+
+    def test_top_pool_cross_validation_marks_primary_mismatch_low_confidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            write_source_fixture(root, data_date=data_date, history_provider="sina")
+
+            def fake_eastmoney(code: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
+                frame = raw_history_frame(data_date, code, DEFAULT_AMOUNTS.get(code, 5.0)).copy()
+                frame["收盘"] = pd.to_numeric(frame["收盘"], errors="coerce") * 1.1
+                return frame, "eastmoney_urllib"
+
+            with patch("trend_radar.fetcher._fetch_history_eastmoney_with_provider", side_effect=fake_eastmoney):
+                result = generate_scores(data_date, root=root)
+
+            radar = pd.read_csv(result.radar_csv, dtype={"代码": str})
+            top = radar.head(10)
+            self.assertTrue((top["数据置信度"] == "低").all())
+            self.assertTrue(top["数据问题"].str.contains("主源与兜底源关键字段不一致").all())
+
+    def test_spot_fallback_share_source_is_not_marked_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            write_source_fixture(root, data_date=data_date, share_source="spot_fallback")
+
+            result = generate_scores(data_date, root=root)
+            radar = pd.read_csv(result.radar_csv, dtype={"代码": str})
+
+            self.assertEqual(set(radar["数据置信度"]), {"中"})
+            self.assertEqual(set(radar["份额来源"]), {"实时行情份额"})
+            self.assertNotIn("完整", set(radar["数据质量"]))
+            self.assertTrue(radar["数据问题"].str.contains("官方份额接口缺失").all())
 
 
 if __name__ == "__main__":

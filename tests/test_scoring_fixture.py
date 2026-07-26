@@ -58,6 +58,7 @@ class ScoringFixtureTests(unittest.TestCase):
                         "成交额(亿)": [5.0 - index * 0.5] * 140,
                         "成交量": [10000 * index] * 140,
                         "涨跌幅": [0.1] * 140,
+                        "history_source": ["fixture"] * 140,
                     }
                 )
                 history.to_csv(history_dir / f"{code}.csv", index=False)
@@ -75,6 +76,23 @@ class ScoringFixtureTests(unittest.TestCase):
                         }
                     )
             pd.DataFrame(share_rows).to_csv(normalized / "shares.csv", index=False)
+            report = {
+                "data_date": data_date,
+                "history_provider_counts": {"fixture": 3},
+                "history_outcomes": [
+                    {
+                        "code": code,
+                        "name": code,
+                        "status": "cached",
+                        "rows": 140,
+                        "provider": "fixture",
+                        "latest_date": data_date,
+                        "stale": False,
+                    }
+                    for code in ["159995", "510300", "512880"]
+                ],
+            }
+            (normalized / "fetch_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
             result = generate_scores(data_date, root=root)
             self.assertEqual(result.rows, 3)
@@ -175,6 +193,7 @@ class ScoringFixtureTests(unittest.TestCase):
                     "成交额(亿)": [amounts[code]] * 150,
                     "成交量": [10000 * index] * 150,
                     "涨跌幅": [0.1] * 150,
+                    "history_source": ["fixture"] * 150,
                 }
             )
             history.to_csv(history_dir / f"{code}.csv", index=False)
@@ -192,6 +211,23 @@ class ScoringFixtureTests(unittest.TestCase):
                     }
                 )
         pd.DataFrame(share_rows).to_csv(normalized / "shares.csv", index=False)
+        report = {
+            "data_date": source_date,
+            "history_provider_counts": {"fixture": 4},
+            "history_outcomes": [
+                {
+                    "code": code,
+                    "name": code,
+                    "status": "cached",
+                    "rows": 150,
+                    "provider": "fixture",
+                    "latest_date": source_date,
+                    "stale": False,
+                }
+                for code in ["159995", "510300", "512880", "511990"]
+            ],
+        }
+        (normalized / "fetch_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def test_structure_score_uses_ema_rules(self) -> None:
         cases = [

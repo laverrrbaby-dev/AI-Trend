@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import atexit
 import importlib
 import json
 import os
+import random
 import shutil
+import signal
 import ssl
 import subprocess
 import threading
 import time
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from datetime import timedelta
@@ -49,10 +52,14 @@ def _init_no_proxy(self, *args, **kwargs):
 _requests.Session.__init__ = _init_no_proxy  # type: ignore[method-assign]
 
 from .config import (
+    CHECKPOINT_WRITE_INTERVAL,
     DEFAULT_HISTORY_FETCH_MAX_WORKERS,
+    HISTORY_FETCH_PER_CODE_TIMEOUT,
     MIN_LATEST_AMOUNT_YI,
     MIN_MARKET_CAP_YI,
     PROJECT_ROOT,
+    SSE_FETCH_MAX_WORKERS,
+    SSE_FETCH_PER_DAY_TIMEOUT,
     ensure_data_dirs,
     now_shanghai,
 )
@@ -87,6 +94,269 @@ class HistoryFetchOutcome:
     fallback_error: str | None = None
 
 
+class _FetchAborted(Exception):
+    """Raised when the fetch pipeline is interrupted by a signal."""
+
+
+class _AbortEvent:
+    """Thread-safe abort flag for graceful shutdown."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def set(self) -> None:
+        self._event.set()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def check(self) -> None:
+        if self._event.is_set():
+            raise _FetchAborted("fetch aborted by signal")
+
+
+_ACTIVE_ABORT_EVENT: _AbortEvent | None = None
+_ACTIVE_ABORT_LOCK = threading.Lock()
+
+
+def _install_signal_handlers(abort: _AbortEvent) -> None:
+    """Install SIGINT/SIGTERM handlers that set the abort event."""
+    def _handler(signum: int, frame: Any) -> None:
+        abort.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            pass  # not in main thread; signal handlers can't be installed
+
+
+def _restore_signal_handlers() -> None:
+    """Restore default signal handlers."""
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, signal.SIG_DFL)
+        except (ValueError, OSError):
+            pass
+
+
+def _cleanup_stale_tmp_files(root: Path) -> None:
+    """Remove orphaned .tmp files left by interrupted writes."""
+    data_dir = root / "data"
+    if not data_dir.exists():
+        return
+    for tmp_path in data_dir.rglob("*.tmp"):
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+
+_atexit_cleanup_registered = False
+
+
+def _register_atexit_cleanup(root: Path) -> None:
+    """Register atexit handler to clean up on abnormal exit.
+
+    Uses a sentinel to avoid duplicate registrations within the same process.
+    """
+    global _atexit_cleanup_registered
+    if _atexit_cleanup_registered:
+        return
+    _atexit_cleanup_registered = True
+
+    def _cleanup() -> None:
+        _cleanup_stale_tmp_files(root)
+
+    atexit.register(_cleanup)
+
+
+def _sse_checkpoint_path(root: Path, data_date: str) -> Path:
+    return root / "data" / "state" / f"fetch_checkpoint_sse_{data_date}.json"
+
+
+def _read_sse_checkpoint(root: Path, data_date: str) -> set[str] | None:
+    """Read SSE checkpoint and return completed days if PID is dead. Returns None if should resume."""
+    path = _sse_checkpoint_path(root, data_date)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    pid = payload.get("pid")
+    if isinstance(pid, int) and pid > 0:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            return None
+        except OSError:
+            pass
+        else:
+            return None  # PID alive, don't reuse
+    completed = payload.get("completed_days", [])
+    if isinstance(completed, list):
+        return {str(d) for d in completed}
+    return None
+
+
+def _write_sse_checkpoint(root: Path, data_date: str, completed_days: set[str]) -> None:
+    """Write SSE checkpoint atomically."""
+    path = _sse_checkpoint_path(root, data_date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "data_date": data_date,
+        "completed_days": sorted(completed_days),
+        "updated_at": now_shanghai().strftime("%Y-%m-%d %H:%M:%S"),
+        "pid": os.getpid(),
+    }
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _clear_sse_checkpoint(root: Path, data_date: str) -> None:
+    path = _sse_checkpoint_path(root, data_date)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _checkpoint_path(root: Path, data_date: str) -> Path:
+    return root / "data" / "state" / f"fetch_checkpoint_{data_date}.json"
+
+
+def _read_checkpoint(root: Path, data_date: str) -> dict[str, Any] | None:
+    path = _checkpoint_path(root, data_date)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if not payload.get("candidate_codes"):
+        return None
+    pid = payload.get("pid")
+    if isinstance(pid, int) and pid > 0:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            return None
+        except OSError:
+            pass
+        else:
+            return None
+    return payload
+
+
+def _write_checkpoint(
+    data_date: str,
+    candidate_codes: list[str],
+    outcomes_dict: dict[str, dict[str, Any]],
+    root: Path,
+) -> None:
+    path = _checkpoint_path(root, data_date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "data_date": data_date,
+        "candidate_codes": candidate_codes,
+        "outcomes": {str(code): dict(item) for code, item in outcomes_dict.items()},
+        "updated_at": now_shanghai().strftime("%Y-%m-%d %H:%M:%S"),
+        "pid": os.getpid(),
+    }
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _clear_checkpoint(root: Path, data_date: str) -> None:
+    path = _checkpoint_path(root, data_date)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _rebuild_outcomes_from_checkpoint(
+    checkpoint: dict[str, Any],
+    normalized_history_dir: Path,
+    target: pd.Timestamp,
+) -> tuple[list[HistoryFetchOutcome], list[dict[str, str]], int, int, int, int]:
+    outcomes: list[HistoryFetchOutcome] = []
+    failed_history: list[dict[str, str]] = []
+    skipped_cached = 0
+    fetched = 0
+    history_errors = 0
+    history_rows = 0
+
+    for code, entry in checkpoint.get("outcomes", {}).items():
+        code = str(code).zfill(6)
+        status = str(entry.get("status", ""))
+        name = str(entry.get("name", ""))
+        normalized_path = normalized_history_dir / f"{code}.csv"
+
+        if status in ("cached", "fetched"):
+            meta = _valid_normalized_history_metadata(normalized_path, target)
+            if meta is not None:
+                rows, latest_date = meta
+                provider = str(entry.get("provider") or "")
+                stale = bool(entry.get("stale", False))
+                outcome = HistoryFetchOutcome(
+                    code=code,
+                    name=name,
+                    status=status,
+                    rows=rows,
+                    provider=provider if provider else None,
+                    latest_date=latest_date,
+                    stale=stale,
+                    primary_provider=str(entry.get("primary_provider") or "") or None,
+                    primary_error=str(entry.get("primary_error") or "") or None,
+                    fallback_provider=str(entry.get("fallback_provider") or "") or None,
+                    fallback_error=str(entry.get("fallback_error") or "") or None,
+                )
+                outcomes.append(outcome)
+                history_rows += rows
+                if status == "cached":
+                    skipped_cached += 1
+                else:
+                    fetched += 1
+                continue
+        elif status == "error":
+            error_msg = str(entry.get("error") or "unknown history error")
+            outcome = HistoryFetchOutcome(
+                code=code,
+                name=name,
+                status="error",
+                error=error_msg,
+            )
+            outcomes.append(outcome)
+            failed_history.append({"code": code, "name": name, "error": error_msg})
+            history_errors += 1
+            continue
+
+    return outcomes, failed_history, skipped_cached, fetched, history_errors, history_rows
+
+
+def _filter_pending_records(
+    candidate_records: list[dict[str, Any]],
+    checkpoint_outcomes: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        record
+        for record in candidate_records
+        if str(record["code"]).zfill(6) not in checkpoint_outcomes
+    ]
+
+
 def fetch_data(
     data_date: str,
     root: Path = PROJECT_ROOT,
@@ -100,6 +370,15 @@ def fetch_data(
 ) -> FetchResult:
     ak = _load_akshare()
     ensure_data_dirs(root)
+    _cleanup_stale_tmp_files(root)
+
+    # Install signal handlers for graceful shutdown
+    global _ACTIVE_ABORT_EVENT
+    with _ACTIVE_ABORT_LOCK:
+        abort = _AbortEvent()
+        _ACTIVE_ABORT_EVENT = abort
+    _install_signal_handlers(abort)
+    _register_atexit_cleanup(root)
 
     target = pd.Timestamp(data_date)
     history_start = (target - timedelta(days=history_calendar_days)).strftime("%Y%m%d")
@@ -186,120 +465,220 @@ def fetch_data(
     history_errors = 0
     failed_history: list[dict[str, str]] = []
     history_outcomes: list[HistoryFetchOutcome] = []
-    _emit_progress(
-        progress_callback,
-        "fetch_history",
-        completed,
-        total_candidates,
-        skipped_cached=skipped_cached,
-        fetched=fetched,
-        errors=history_errors,
-        max_workers=workers,
-    )
-    if total_candidates:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [
-                executor.submit(
-                    _load_or_fetch_history,
-                    ak,
-                    str(row["code"]).zfill(6),
-                    str(row.get("name", "")),
-                    history_start,
-                    target_ymd,
-                    target,
-                    raw_history_dir,
-                    normalized_history_dir,
-                    resume,
-                    spot_history_fallbacks.get(str(row["code"]).zfill(6)),
+
+    checkpoint_data: dict[str, Any] | None = None
+    checkpoint_outcomes: dict[str, dict[str, Any]] = {}
+    checkpoint_lock = threading.Lock()
+    completed_before_resume = 0
+
+    try:
+        if resume:
+            checkpoint_data = _read_checkpoint(root, data_date)
+            if checkpoint_data is not None:
+                rebuilt_outcomes, rebuilt_failed, rebuilt_cached, rebuilt_fetched, rebuilt_errors, rebuilt_rows = (
+                    _rebuild_outcomes_from_checkpoint(checkpoint_data, normalized_history_dir, target)
                 )
-                for row in candidate_records
-            ]
-            for future in as_completed(futures):
-                outcome = future.result()
-                history_outcomes.append(outcome)
-                completed += 1
-                history_rows += outcome.rows
-                if outcome.status == "cached":
-                    skipped_cached += 1
-                elif outcome.status == "fetched":
-                    fetched += 1
-                else:
-                    history_errors += 1
-                    error = outcome.error or "unknown history error"
-                    failed_history.append({"code": outcome.code, "name": outcome.name, "error": error})
-                    errors.append(f"{outcome.code}: {error}")
-                _emit_progress(
-                    progress_callback,
-                    "fetch_history",
-                    completed,
-                    total_candidates,
-                    outcome.code,
-                    outcome.name,
-                    skipped_cached=skipped_cached,
-                    fetched=fetched,
-                    errors=history_errors,
-                    max_workers=workers,
+                history_outcomes.extend(rebuilt_outcomes)
+                failed_history.extend(rebuilt_failed)
+                skipped_cached += rebuilt_cached
+                fetched += rebuilt_fetched
+                history_errors += rebuilt_errors
+                history_rows += rebuilt_rows
+                completed_before_resume = len(rebuilt_outcomes)
+                completed = completed_before_resume
+                checkpoint_outcomes = {str(item.code): asdict(item) for item in rebuilt_outcomes}
+                pending_records = _filter_pending_records(candidate_records, checkpoint_outcomes)
+            else:
+                pending_records = candidate_records
+        else:
+            pending_records = candidate_records
+
+        _emit_progress(
+            progress_callback,
+            "fetch_history",
+            completed,
+            total_candidates,
+            skipped_cached=skipped_cached,
+            fetched=fetched,
+            errors=history_errors,
+            max_workers=workers,
+        )
+        if pending_records:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [
+                    executor.submit(
+                        _load_or_fetch_history,
+                        ak,
+                        str(row["code"]).zfill(6),
+                        str(row.get("name", "")),
+                        history_start,
+                        target_ymd,
+                        target,
+                        raw_history_dir,
+                        normalized_history_dir,
+                        resume,
+                        spot_history_fallbacks.get(str(row["code"]).zfill(6)),
+                    )
+                    for row in pending_records
+                ]
+                for future in as_completed(futures):
+                    # Check abort signal before processing each result
+                    abort.check()
+
+                    try:
+                        outcome = future.result(timeout=HISTORY_FETCH_PER_CODE_TIMEOUT)
+                    except FutureTimeoutError:
+                        # ETF fetch timed out - record as error and continue
+                        outcome = HistoryFetchOutcome(
+                            code="unknown",
+                            name="unknown",
+                            status="error",
+                            error=f"fetch timed out after {HISTORY_FETCH_PER_CODE_TIMEOUT}s",
+                        )
+                    except _FetchAborted:
+                        raise
+                    except Exception as exc:
+                        # Unexpected exception from worker - record as error, save checkpoint, continue
+                        outcome = HistoryFetchOutcome(
+                            code="unknown",
+                            name="unknown",
+                            status="error",
+                            error=f"unexpected fetch error: {exc}",
+                        )
+
+                    history_outcomes.append(outcome)
+                    completed += 1
+                    history_rows += outcome.rows
+                    if outcome.status == "cached":
+                        skipped_cached += 1
+                    elif outcome.status == "fetched":
+                        fetched += 1
+                    else:
+                        history_errors += 1
+                        error = outcome.error or "unknown history error"
+                        failed_history.append({"code": outcome.code, "name": outcome.name, "error": error})
+                        errors.append(f"{outcome.code}: {error}")
+
+                    if resume:
+                        with checkpoint_lock:
+                            checkpoint_outcomes[str(outcome.code)] = asdict(outcome)
+                        checkpoint_count = completed - completed_before_resume
+                        if (
+                            checkpoint_count % CHECKPOINT_WRITE_INTERVAL == 0
+                            or completed >= total_candidates
+                        ):
+                            _write_checkpoint(
+                                data_date,
+                                [str(r["code"]).zfill(6) for r in candidate_records],
+                                checkpoint_outcomes,
+                                root,
+                            )
+
+                    _emit_progress(
+                        progress_callback,
+                        "fetch_history",
+                        completed,
+                        total_candidates,
+                        outcome.code,
+                        outcome.name,
+                        skipped_cached=skipped_cached,
+                        fetched=fetched,
+                        errors=history_errors,
+                        max_workers=workers,
+                    )
+
+        if resume:
+            _clear_checkpoint(root, data_date)
+
+        abort.check()
+
+        _emit_progress(
+            progress_callback,
+            "fetch_scale",
+            total_candidates,
+            total_candidates,
+            skipped_cached=skipped_cached,
+            fetched=fetched,
+            errors=history_errors,
+            max_workers=workers,
+        )
+        shares_path = normalized_dir / "shares.csv"
+        shares = _read_valid_shares(shares_path) if resume else None
+        if shares is None:
+            share_frames = []
+            sse_completed_days: set[str] = set()
+            if resume:
+                sse_checkpoint = _read_sse_checkpoint(root, data_date)
+                if sse_checkpoint is not None:
+                    sse_completed_days = sse_checkpoint
+            share_frames.extend(_fetch_sse_scales(
+                ak, share_start, target_ymd, raw_scale_dir, errors,
+                abort=abort, completed_days=sse_completed_days,
+                checkpoint_root=root, data_date=data_date,
+            ))
+            abort.check()
+            share_frames.extend(_fetch_szse_scales(ak, share_start, target_ymd, raw_scale_dir, errors))
+            shares = _merge_share_sources(share_frames, candidates, data_date)
+            _write_csv(shares, shares_path)
+            _clear_sse_checkpoint(root, data_date)
+
+        report = {
+            "data_date": data_date,
+            "fetched_at": now_shanghai().strftime("%Y-%m-%d %H:%M:%S"),
+            "spot_rows": int(len(spot)),
+            "candidate_rows": int(len(candidates)),
+            "history_rows": int(history_rows),
+            "share_rows": int(len(shares)),
+            "history_total": int(total_candidates),
+            "history_success": int(skipped_cached + fetched),
+            "history_failed": int(history_errors),
+            "failed_history": failed_history,
+            "stale_history_files": int(sum(1 for item in history_outcomes if item.stale)),
+            "history_provider_counts": _counts(item.provider or "unknown" for item in history_outcomes),
+            "history_latest_date_counts": _counts(item.latest_date or "missing" for item in history_outcomes),
+            "history_outcomes": [asdict(item) for item in sorted(history_outcomes, key=lambda item: item.code)],
+            "spot_data_dates": spot_data_dates,
+            "spot_data_matches_target": bool(spot_matches_target),
+            "spot_derived_metrics_enabled": bool(spot_matches_target),
+            "candidate_source": candidate_source,
+            "candidate_source_date": candidate_source_date,
+            "skipped_cached": int(skipped_cached),
+            "fetched_history_files": int(fetched),
+            "history_errors": int(history_errors),
+            "resume": bool(resume),
+            "max_workers": int(workers),
+            "errors": errors,
+            "warnings": warnings,
+            "source": "akshare",
+        }
+        _write_json(report, normalized_dir / "fetch_report.json")
+
+        return FetchResult(
+            data_date=data_date,
+            spot_rows=len(spot),
+            candidate_rows=len(candidates),
+            history_rows=history_rows,
+            share_rows=len(shares),
+            errors=errors,
+            normalized_dir=normalized_dir,
+        )
+    except _FetchAborted:
+        # Save checkpoint on abort so progress is not lost
+        if resume and checkpoint_outcomes:
+            try:
+                _write_checkpoint(
+                    data_date,
+                    [str(r["code"]).zfill(6) for r in candidate_records],
+                    checkpoint_outcomes,
+                    root,
                 )
-
-    _emit_progress(
-        progress_callback,
-        "fetch_scale",
-        total_candidates,
-        total_candidates,
-        skipped_cached=skipped_cached,
-        fetched=fetched,
-        errors=history_errors,
-        max_workers=workers,
-    )
-    shares_path = normalized_dir / "shares.csv"
-    shares = _read_valid_shares(shares_path) if resume else None
-    if shares is None:
-        share_frames = []
-        share_frames.extend(_fetch_sse_scales(ak, share_start, target_ymd, raw_scale_dir, errors))
-        share_frames.extend(_fetch_szse_scales(ak, share_start, target_ymd, raw_scale_dir, errors))
-        shares = _merge_share_sources(share_frames, candidates, data_date)
-        _write_csv(shares, shares_path)
-
-    report = {
-        "data_date": data_date,
-        "fetched_at": now_shanghai().strftime("%Y-%m-%d %H:%M:%S"),
-        "spot_rows": int(len(spot)),
-        "candidate_rows": int(len(candidates)),
-        "history_rows": int(history_rows),
-        "share_rows": int(len(shares)),
-        "history_total": int(total_candidates),
-        "history_success": int(skipped_cached + fetched),
-        "history_failed": int(history_errors),
-        "failed_history": failed_history,
-        "stale_history_files": int(sum(1 for item in history_outcomes if item.stale)),
-        "history_provider_counts": _counts(item.provider or "unknown" for item in history_outcomes),
-        "history_latest_date_counts": _counts(item.latest_date or "missing" for item in history_outcomes),
-        "history_outcomes": [asdict(item) for item in sorted(history_outcomes, key=lambda item: item.code)],
-        "spot_data_dates": spot_data_dates,
-        "spot_data_matches_target": bool(spot_matches_target),
-        "spot_derived_metrics_enabled": bool(spot_matches_target),
-        "candidate_source": candidate_source,
-        "candidate_source_date": candidate_source_date,
-        "skipped_cached": int(skipped_cached),
-        "fetched_history_files": int(fetched),
-        "history_errors": int(history_errors),
-        "resume": bool(resume),
-        "max_workers": int(workers),
-        "errors": errors,
-        "warnings": warnings,
-        "source": "akshare",
-    }
-    _write_json(report, normalized_dir / "fetch_report.json")
-
-    return FetchResult(
-        data_date=data_date,
-        spot_rows=len(spot),
-        candidate_rows=len(candidates),
-        history_rows=history_rows,
-        share_rows=len(shares),
-        errors=errors,
-        normalized_dir=normalized_dir,
-    )
+            except Exception:
+                pass
+        raise
+    finally:
+        with _ACTIVE_ABORT_LOCK:
+            _ACTIVE_ABORT_EVENT = None
+        _restore_signal_handlers()
 
 
 def _emit_progress(
@@ -745,7 +1124,9 @@ def _fetch_history_with_attempt_details(
             return frame, provider, None, None
         except Exception as exc:
             errors.append(f"eastmoney[{attempt}]: {exc}")
-            time.sleep(0.5)
+            if attempt < 1:
+                delay = 0.2 * (2 ** attempt) + random.uniform(0, 0.1)
+                time.sleep(delay)
 
     primary_error = "; ".join(errors)
     try:
@@ -800,14 +1181,44 @@ def _eastmoney_history_url(code: str, start_date: str, end_date: str) -> str:
     return f"https://push2his.eastmoney.com/api/qt/stock/kline/get?{urllib.parse.urlencode(params)}"
 
 
-def _fetch_history_eastmoney_urllib(url: str) -> pd.DataFrame:
-    ssl_context = ssl.create_default_context(cafile=certifi.where())
-    ssl_context.set_alpn_protocols(["http/1.1"])
-    ssl_context.check_hostname = True
-    ssl_context.verify_mode = ssl.CERT_REQUIRED
+_HISTORY_SSL_CONTEXT: ssl.SSLContext | None = None
+_HISTORY_SSL_LOCK = threading.Lock()
 
+
+def _get_history_ssl_context() -> ssl.SSLContext:
+    global _HISTORY_SSL_CONTEXT
+    if _HISTORY_SSL_CONTEXT is None:
+        with _HISTORY_SSL_LOCK:
+            if _HISTORY_SSL_CONTEXT is None:
+                ctx = ssl.create_default_context(cafile=certifi.where())
+                ctx.set_alpn_protocols(["http/1.1"])
+                ctx.check_hostname = True
+                ctx.verify_mode = ssl.CERT_REQUIRED
+                _HISTORY_SSL_CONTEXT = ctx
+    return _HISTORY_SSL_CONTEXT
+
+
+_EASTMONEY_OPENER_INSTALLED = False
+_EASTMONEY_OPENER_LOCK = threading.Lock()
+
+
+def _ensure_eastmoney_opener() -> None:
+    """Install a shared opener so urllib.request.urlopen reuses TCP connections."""
+    global _EASTMONEY_OPENER_INSTALLED
+    if not _EASTMONEY_OPENER_INSTALLED:
+        with _EASTMONEY_OPENER_LOCK:
+            if not _EASTMONEY_OPENER_INSTALLED:
+                https_handler = urllib.request.HTTPSHandler(context=_get_history_ssl_context())
+                opener = urllib.request.build_opener(https_handler)
+                opener.addheaders = [("User-Agent", _EASTMONEY_UA)]
+                urllib.request.install_opener(opener)
+                _EASTMONEY_OPENER_INSTALLED = True
+
+
+def _fetch_history_eastmoney_urllib(url: str) -> pd.DataFrame:
+    _ensure_eastmoney_opener()
     req = urllib.request.Request(url, headers={"User-Agent": _EASTMONEY_UA})
-    with urllib.request.urlopen(req, timeout=15, context=ssl_context) as resp:
+    with urllib.request.urlopen(req, timeout=15) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return _eastmoney_payload_to_frame(data)
 
@@ -905,25 +1316,108 @@ def _sina_volume_to_hands(raw: pd.DataFrame, volume: pd.Series, amount: pd.Serie
     return volume.where(volume_looks_like_hands, volume / 100)
 
 
-def _fetch_sse_scales(ak: Any, start_ymd: str, end_ymd: str, raw_scale_dir: Path, errors: list[str]) -> list[pd.DataFrame]:
+def _fetch_sse_scales(
+    ak: Any,
+    start_ymd: str,
+    end_ymd: str,
+    raw_scale_dir: Path,
+    errors: list[str],
+    abort: _AbortEvent | None = None,
+    completed_days: set[str] | None = None,
+    checkpoint_root: Path | None = None,
+    data_date: str = "",
+) -> list[pd.DataFrame]:
     if not hasattr(ak, "fund_etf_scale_sse"):
         errors.append("SSE scale: akshare.fund_etf_scale_sse is unavailable")
         return []
 
-    frames: list[pd.DataFrame] = []
     start = pd.to_datetime(start_ymd, format="%Y%m%d")
     end = pd.to_datetime(end_ymd, format="%Y%m%d")
-    for current in pd.bdate_range(start, end):
+    all_days = list(pd.bdate_range(start, end))
+
+    # Filter out already completed days (checkpoint resume)
+    skip_days = completed_days or set()
+    pending_days = [d for d in all_days if d.strftime("%Y%m%d") not in skip_days]
+
+    if not pending_days:
+        return []
+
+    frames: list[pd.DataFrame] = []
+    errors_lock = threading.Lock()
+    frames_lock = threading.Lock()
+    completed_lock = threading.Lock()
+    current_completed = set(skip_days)
+
+    def _fetch_one_day(current: pd.Timestamp) -> pd.DataFrame | None:
         ymd = current.strftime("%Y%m%d")
+        if abort and abort.is_set():
+            return None
         try:
             raw = _call_akshare(ak, "fund_etf_scale_sse", date=ymd)
             if raw.empty:
-                continue
+                with completed_lock:
+                    current_completed.add(ymd)
+                _write_sse_checkpoint_partial(checkpoint_root, data_date, current_completed)
+                return None
             _write_csv(raw, raw_scale_dir / f"sse_{ymd}.csv")
-            frames.append(normalize_scale(raw, "sse", current.strftime("%Y-%m-%d")))
+            frame = normalize_scale(raw, "sse", current.strftime("%Y-%m-%d"))
+            with completed_lock:
+                current_completed.add(ymd)
+            _write_sse_checkpoint_partial(checkpoint_root, data_date, current_completed)
+            return frame
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"SSE scale {ymd}: {exc}")
+            with errors_lock:
+                errors.append(f"SSE scale {ymd}: {exc}")
+            with completed_lock:
+                current_completed.add(ymd)
+            _write_sse_checkpoint_partial(checkpoint_root, data_date, current_completed)
+            return None
+
+    workers = min(SSE_FETCH_MAX_WORKERS, len(pending_days))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_day = {
+            executor.submit(_fetch_one_day, day): day
+            for day in pending_days
+        }
+        for future in as_completed(future_to_day):
+            if abort and abort.is_set():
+                for f in future_to_day:
+                    f.cancel()
+                break
+            try:
+                result = future.result(timeout=SSE_FETCH_PER_DAY_TIMEOUT)
+            except FutureTimeoutError:
+                day = future_to_day[future]
+                with errors_lock:
+                    errors.append(f"SSE scale {day.strftime('%Y%m%d')}: timed out after {SSE_FETCH_PER_DAY_TIMEOUT}s")
+                continue
+            except Exception:
+                continue
+            if result is not None:
+                with frames_lock:
+                    frames.append(result)
+
+    # Merge in frames from completed days that were skipped
+    if skip_days:
+        for day_str in sorted(skip_days):
+            if day_str not in {d.strftime("%Y%m%d") for d in pending_days}:
+                scale_path = raw_scale_dir / f"sse_{day_str}.csv"
+                raw = _read_csv(scale_path)
+                if raw is not None and not raw.empty:
+                    try:
+                        day_ts = pd.Timestamp(day_str)
+                        frames.append(normalize_scale(raw, "sse", day_ts.strftime("%Y-%m-%d")))
+                    except Exception:
+                        pass
+
     return frames
+
+
+def _write_sse_checkpoint_partial(root: Path | None, data_date: str, completed_days: set[str]) -> None:
+    """Write SSE checkpoint if root is provided."""
+    if root is None or not data_date:
+        return
+    _write_sse_checkpoint(root, data_date, completed_days)
 
 
 def _fetch_szse_scales(ak: Any, start_ymd: str, end_ymd: str, raw_scale_dir: Path, errors: list[str]) -> list[pd.DataFrame]:

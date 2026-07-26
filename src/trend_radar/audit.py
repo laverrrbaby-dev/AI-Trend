@@ -113,6 +113,7 @@ def _run_audit(
     top30_diffs: list[dict[str, Any]] = []
     spot_history_diffs: list[dict[str, Any]] = []
     external_diffs: list[dict[str, Any]] = []
+    confidence_summary: list[dict[str, Any]] = []
     provider_counts: Counter[str] = Counter()
     source_cache: dict[str, _SourceUniverse] = {}
     source_dates: set[str] = set()
@@ -132,6 +133,7 @@ def _run_audit(
             source_cache[source_date] = _load_source_universe(root, source_date, errors, warnings, coverage)
         _audit_top30_for_date(root, data_date, source_cache[source_date], errors, top30_diffs)
         _audit_spot_history_for_date(data_date, source_cache[source_date], spot_history_diffs)
+        _audit_confidence_for_date(root, data_date, warnings, confidence_summary)
 
     validation = validate_outputs(start=start, end=end, root=root)
     if validation.errors:
@@ -164,6 +166,7 @@ def _run_audit(
         "top30_diffs": top30_diffs,
         "spot_history_diffs": spot_history_diffs,
         "external_diffs": external_diffs,
+        "confidence_summary": confidence_summary,
         "external_provider_counts": dict(provider_counts),
         "external": bool(external),
     }
@@ -187,6 +190,60 @@ def _source_date_for(root: Path, data_date: str, errors: list[str]) -> str | Non
         errors.append(f"{data_date}: failed to read metadata JSON: {exc}")
         return None
     return str(payload.get("source_date") or data_date)
+
+
+def _audit_confidence_for_date(
+    root: Path,
+    data_date: str,
+    warnings: list[str],
+    confidence_summary: list[dict[str, Any]],
+) -> None:
+    path = root / "data" / "radar" / f"{data_date}.csv"
+    if not path.exists():
+        return
+    try:
+        frame = pd.read_csv(path, dtype={"代码": str})
+    except (OSError, ValueError, EmptyDataError):
+        return
+    if frame.empty or "数据置信度" not in frame:
+        warnings.append(f"{data_date}: radar output has no confidence fields; regenerate with current scoring code")
+        return
+    confidence_counts = frame["数据置信度"].fillna("未记录").astype(str).value_counts().to_dict()
+    source_counts = (
+        frame["行情来源"].fillna("来源未记录").astype(str).value_counts().to_dict()
+        if "行情来源" in frame
+        else {}
+    )
+    issue_rows = int((frame.get("数据问题", pd.Series("无", index=frame.index)).fillna("无").astype(str) != "无").sum())
+    low_rows = int(confidence_counts.get("低", 0))
+    top10_low_rows = int(frame.head(10)["数据置信度"].fillna("未记录").astype(str).eq("低").sum())
+    history_source = (
+        frame["行情来源"].fillna("来源未记录").astype(str)
+        if "行情来源" in frame
+        else pd.Series(["来源未记录"] * len(frame), index=frame.index)
+    )
+    issue_text = frame.get("数据问题", pd.Series("无", index=frame.index)).fillna("无").astype(str)
+    top10_sina_rows = int(history_source.head(10).str.contains("新浪", regex=False).sum())
+    cross_mismatch_rows = int(issue_text.str.contains("主源与兜底源关键字段不一致", regex=False).sum())
+    confidence_summary.append(
+        {
+            "data_date": data_date,
+            "rows": int(len(frame)),
+            "confidence_counts": {str(key): int(value) for key, value in confidence_counts.items()},
+            "history_source_counts": {str(key): int(value) for key, value in source_counts.items()},
+            "issue_rows": issue_rows,
+            "low_confidence_rows": low_rows,
+            "top10_low_confidence_rows": top10_low_rows,
+            "top10_sina_fallback_rows": top10_sina_rows,
+            "cross_mismatch_rows": cross_mismatch_rows,
+        }
+    )
+    if low_rows:
+        warnings.append(f"{data_date}: {low_rows} low-confidence rows; Top10 low-confidence rows {top10_low_rows}")
+    if top10_sina_rows:
+        warnings.append(f"{data_date}: Top10 has {top10_sina_rows} Sina fallback rows")
+    if cross_mismatch_rows:
+        warnings.append(f"{data_date}: {cross_mismatch_rows} rows have primary/fallback mismatches")
 
 
 def _load_source_universe(

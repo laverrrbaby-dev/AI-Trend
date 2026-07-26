@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -37,6 +38,8 @@ def write_source_fixture(
     include_excluded: bool = False,
     future_rows: int = 0,
     missing_share_codes: set[str] | None = None,
+    history_provider: str = "fixture",
+    share_source: str = "fixture",
 ) -> SourceFixture:
     """Create a deterministic normalized source snapshot under a temp root."""
 
@@ -96,6 +99,7 @@ def write_source_fixture(
     for index, code in enumerate(selected_codes, start=1):
         amount = DEFAULT_AMOUNTS.get(code, max(0.5, 5.0 - index * 0.5))
         history = normalized_history_frame(code, all_history_dates, amount, index=index)
+        history["history_source"] = history_provider
         if future_rows:
             future_mask = history["日期"] > pd.Timestamp(data_date)
             history.loc[future_mask, "收盘价"] = history.loc[future_mask, "收盘价"] * 5
@@ -121,10 +125,34 @@ def write_source_fixture(
                     "name": code,
                     "日期": current,
                     "ETF份额(亿份)": value,
-                    "share_source": "fixture",
+                    "share_source": share_source,
                 }
             )
     pd.DataFrame(share_rows).to_csv(normalized_dir / "shares.csv", index=False)
+    fetch_report = {
+        "data_date": data_date,
+        "candidate_rows": len(selected_codes),
+        "history_total": len(selected_codes),
+        "history_success": len(selected_codes),
+        "history_failed": 0,
+        "history_provider_counts": {history_provider: len(selected_codes)},
+        "history_outcomes": [
+            {
+                "code": code,
+                "name": name,
+                "status": "cached",
+                "rows": int(len(all_history_dates)),
+                "error": None,
+                "provider": history_provider,
+                "latest_date": data_date,
+                "stale": False,
+            }
+            for code, name in zip(selected_codes, names, strict=True)
+        ],
+        "errors": [],
+        "source": "fixture",
+    }
+    (normalized_dir / "fetch_report.json").write_text(json.dumps(fetch_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return SourceFixture(root, data_date, normalized_dir, history_dir, selected_codes, dates)
 

@@ -278,9 +278,20 @@ def _start_auto_refresh_once(target_date: str) -> bool:
 
 
 def _start_refresh_thread(force: bool) -> None:
+    def _safe_refresh() -> None:
+        try:
+            refresh_latest_data(force=force)
+        except Exception:
+            # Exception already recorded in refresh_status.json by refresh_latest_data
+            pass
+
+    # Check for existing refresh thread to avoid duplicates
+    for thread in threading.enumerate():
+        if thread.name == "trend-radar-refresh" and thread.is_alive():
+            return
+
     thread = threading.Thread(
-        target=refresh_latest_data,
-        kwargs={"force": force},
+        target=_safe_refresh,
         name="trend-radar-refresh",
         daemon=True,
     )
@@ -288,8 +299,18 @@ def _start_refresh_thread(force: bool) -> None:
 
 
 def _start_retry_thread() -> None:
+    def _safe_retry() -> None:
+        try:
+            retry_problem_snapshots()
+        except Exception:
+            pass
+
+    for thread in threading.enumerate():
+        if thread.name == "trend-radar-retry" and thread.is_alive():
+            return
+
     thread = threading.Thread(
-        target=retry_problem_snapshots,
+        target=_safe_retry,
         name="trend-radar-retry",
         daemon=True,
     )
@@ -297,10 +318,20 @@ def _start_retry_thread() -> None:
 
 
 def _start_retry_selected_thread(data_date: str) -> None:
+    def _safe_retry_selected() -> None:
+        try:
+            retry_selected_date(data_date=data_date)
+        except Exception:
+            pass
+
+    name = f"trend-radar-retry-{data_date}"
+    for thread in threading.enumerate():
+        if thread.name == name and thread.is_alive():
+            return
+
     thread = threading.Thread(
-        target=retry_selected_date,
-        kwargs={"data_date": data_date},
-        name=f"trend-radar-retry-{data_date}",
+        target=_safe_retry_selected,
+        name=name,
         daemon=True,
     )
     thread.start()
