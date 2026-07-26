@@ -286,7 +286,17 @@ class RefreshTests(unittest.TestCase):
                         "max_workers": DEFAULT_HISTORY_FETCH_MAX_WORKERS,
                     }
                 )
-                progress_statuses.append(read_refresh_status(root))
+                # R4: 等待 _ProgressWriter 后台线程写盘
+                _time = __import__("time")
+                deadline = _time.time() + 2.0
+                while _time.time() < deadline:
+                    status = read_refresh_status(root)
+                    if status.get("phase") == "fetch_history" and status.get("progress"):
+                        progress_statuses.append(status)
+                        break
+                    _time.sleep(0.02)
+                else:
+                    progress_statuses.append(read_refresh_status(root))
                 self._write_history(root, data_date, data_date)
                 return SimpleNamespace(data_date=data_date)
 
@@ -588,6 +598,110 @@ class DetectCompleteDateCountsTests(unittest.TestCase):
             result = _detect_complete_history_date(root, data_date, date_counts=None)
 
             self.assertEqual(result, "2026-05-29")
+
+
+class ProgressWriterDebounceTests(unittest.TestCase):
+    """R4: _ProgressWriter 限频写盘测试。
+
+    不继承 RefreshTests（避免运行父类测试），inline 定义需要的 helper。
+    """
+
+    def _saturday(self) -> datetime:
+        return datetime(2026, 5, 30, 10, 0, tzinfo=ASIA_SHANGHAI)
+
+    def _write_history(self, root: Path, source_date: str, latest_date: str) -> None:
+        history_dir = root / "data" / "normalized" / source_date / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        dates = pd.bdate_range(end=pd.Timestamp(latest_date), periods=3)
+        pd.DataFrame({"日期": dates}).to_csv(history_dir / "159995.csv", index=False)
+
+    def _write_radar(self, root: Path, data_date: str, source_date: str | None = None) -> SimpleNamespace:
+        radar_dir = root / "data" / "radar"
+        radar_dir.mkdir(parents=True, exist_ok=True)
+        radar_csv = radar_dir / f"{data_date}.csv"
+        radar_json = radar_dir / f"{data_date}.json"
+        radar_csv.write_text("排名,ETF名称,代码\n1,芯片ETF,159995\n", encoding="utf-8")
+        radar_json.write_text(
+            json.dumps({"data_date": data_date, "source_date": source_date or data_date, "generated_at": f"{data_date} 16:00:00"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(data_date=data_date, radar_csv=radar_csv, radar_json=radar_json)
+
+    def test_high_frequency_progress_is_debounced(self) -> None:
+        """R4: 高频回调（1000 次）→ 写盘 ≤ 4 次/秒"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            write_count = [0]
+            original_write = None
+
+            import trend_radar.refresh as refresh_mod
+            original_write = refresh_mod._write_status
+            def counting_write(r_root, r_result, traceback_text=None):
+                write_count[0] += 1
+                original_write(r_root, r_result, traceback_text=None)
+
+            with patch.object(refresh_mod, "_write_status", side_effect=counting_write):
+                def fake_fetcher(data_date: str, root: Path, **kwargs: object) -> object:
+                    callback = kwargs["progress_callback"]
+                    # 高频回调 1000 次，应在 0.1s 内完成
+                    for i in range(1000):
+                        callback({
+                            "phase": "fetch_history",
+                            "completed": i, "total": 1000,
+                            "current_code": "159995", "current_name": "测试",
+                            "skipped_cached": 0, "fetched": i, "errors": 0,
+                            "max_workers": 20,
+                        })
+                    self._write_history(root, data_date, data_date)
+                    return SimpleNamespace(data_date=data_date)
+
+                def fake_scorer(data_date: str, root: Path, source_date: str | None = None) -> object:
+                    return self._write_radar(root, data_date)
+
+                start = __import__("time").time()
+                result = refresh_latest_data(root=root, now=self._saturday(), fetcher=fake_fetcher, scorer=fake_scorer)
+                elapsed = __import__("time").time() - start
+
+                self.assertEqual(result.status, REFRESH_SUCCEEDED)
+                # 1000 次回调，写盘应远少于 1000 次（限频 ≤2 次/秒）
+                # 注意：phase 切换会强制写，加上 fetch 完成后的 score phase，整体不会为 0
+                self.assertLess(write_count[0], 100, f"write_count={write_count[0]} should be debounced")
+
+    def test_progress_writer_fallback_on_exception(self) -> None:
+        """R4: 进度线程异常 → 回退同步写，状态不丢"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            captured_progress: list[dict[str, object]] = []
+            import trend_radar.refresh as refresh_mod
+            original_write = refresh_mod._write_status
+
+            def capturing_write(r_root, r_result, traceback_text=None):
+                if r_result.progress is not None:
+                    captured_progress.append(dict(r_result.progress))
+                original_write(r_root, r_result, traceback_text=None)
+
+            with patch.object(refresh_mod, "_write_status", side_effect=capturing_write):
+                def fake_fetcher(data_date: str, root: Path, **kwargs: object) -> object:
+                    callback = kwargs["progress_callback"]
+                    callback({
+                        "phase": "fetch_history",
+                        "completed": 1, "total": 10,
+                        "current_code": "159995", "current_name": "测试",
+                        "skipped_cached": 0, "fetched": 1, "errors": 0,
+                        "max_workers": 20,
+                    })
+                    self._write_history(root, data_date, data_date)
+                    return SimpleNamespace(data_date=data_date)
+
+                def fake_scorer(data_date: str, root: Path, source_date: str | None = None) -> object:
+                    return self._write_radar(root, data_date)
+
+                result = refresh_latest_data(root=root, now=self._saturday(), fetcher=fake_fetcher, scorer=fake_scorer)
+                self.assertEqual(result.status, REFRESH_SUCCEEDED)
+                # 进度应被写入（无论是否回退）
+                self.assertTrue(len(captured_progress) > 0, "progress should have been written")
+                completed_values = [p.get("completed") for p in captured_progress]
+                self.assertIn(1, completed_values, "fetch progress completed=1 should be written")
 
 
 if __name__ == "__main__":

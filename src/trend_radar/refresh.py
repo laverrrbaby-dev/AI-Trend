@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import queue
+import threading
+import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,6 +22,7 @@ from .config import (
     DEFAULT_HISTORY_FETCH_MAX_WORKERS,
     MARKET_COMPLETE_TIME,
     PROJECT_ROOT,
+    PROGRESS_WRITE_MIN_INTERVAL_SECONDS,
     ensure_data_dirs,
     now_shanghai,
 )
@@ -160,22 +164,30 @@ def refresh_latest_data(
 
             score_result = None
             actual_date = target_date if existing_radar.exists() else None
+            # R4: 启动 ProgressWriter 后台线程
+            progress_writer = _ProgressWriter(root, target_date, started_at)
+            progress_writer.start()
             for refresh_date in dates_to_refresh:
 
                 def progress_callback(progress: dict[str, Any], refresh_date: str = refresh_date) -> None:
                     phase = str(progress.get("phase") or "fetch_history")
-                    _write_status(
-                        root,
-                        RefreshResult(
-                            status=REFRESH_RUNNING,
-                            target_date=target_date,
-                            started_at=started_at,
-                            updated_at=_timestamp(),
-                            phase=phase,
-                            progress=_progress_from_callback(progress),
-                            message=f"正在更新 {refresh_date} 数据",
-                        ),
-                    )
+                    # R4: 入队而非同步写
+                    if progress_writer.has_failed():
+                        # 回退同步写
+                        _write_status(
+                            root,
+                            RefreshResult(
+                                status=REFRESH_RUNNING,
+                                target_date=target_date,
+                                started_at=started_at,
+                                updated_at=_timestamp(),
+                                phase=phase,
+                                progress=_progress_from_callback(progress),
+                                message=f"正在更新 {refresh_date} 数据",
+                            ),
+                        )
+                    else:
+                        progress_writer.submit(progress, phase, f"正在更新 {refresh_date} 数据")
 
                 fetch_result = fetcher(
                     data_date=refresh_date,
@@ -204,11 +216,15 @@ def refresh_latest_data(
                         message=f"正在评分 {actual_date} 数据",
                     ),
                 )
+                # R4: 通知 phase 切换（force=True 立即写）
+                progress_writer.submit({}, "score", f"正在评分 {actual_date} 数据")
                 score_result = scorer(data_date=actual_date, root=root, source_date=source_date)
                 _remove_incomplete_target_outputs(root, refresh_date, actual_date)
                 if refresh_date == target_date:
                     _promote_latest_from_radar(root, actual_date)
 
+            # R4: 等待进度线程写入最后状态
+            progress_writer.join()
             target_refreshed = target_date in dates_to_refresh
             final_actual_date = (actual_date or target_date) if target_refreshed else target_date
             final_radar_csv = (
@@ -968,6 +984,92 @@ def _status_path(root: Path) -> Path:
 
 def _lock_path(root: Path) -> Path:
     return root / "data" / "state" / REFRESH_LOCK_FILE
+
+
+class _ProgressWriter:
+    """R4: 后台线程限频写 status，避免阻塞 as_completed 主线程。
+
+    进度回调入队 → 后台线程消费 → 限频写盘。
+    phase 切换立即写；线程异常 → 调用方回退同步写。
+    """
+
+    def __init__(self, root: Path, target_date: str, started_at: str, min_interval: float = PROGRESS_WRITE_MIN_INTERVAL_SECONDS) -> None:
+        self._root = root
+        self._target_date = target_date
+        self._started_at = started_at
+        self._min_interval = min_interval
+        self._queue: queue.Queue = queue.Queue()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._last_write_time = 0.0
+        self._last_phase: str | None = None
+        self._fallback_error: Exception | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="trend-radar-progress-writer", daemon=True)
+        self._thread.start()
+
+    def submit(self, progress: dict[str, Any], phase: str, message: str) -> None:
+        """非阻塞入队。"""
+        try:
+            self._queue.put_nowait((progress, phase, message))
+        except queue.Full:
+            pass  # 丢弃旧进度，不影响主流程
+
+    def join(self, timeout: float = 2.0) -> None:
+        """停止并等待线程结束，确保最后一条状态写入。"""
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        # 兜底：如果线程异常退出，flush 剩余队列
+        if self._fallback_error is not None:
+            self._flush_remaining()
+
+    def has_failed(self) -> bool:
+        return self._fallback_error is not None
+
+    def _run(self) -> None:
+        try:
+            while not self._stop_event.is_set() or not self._queue.empty():
+                try:
+                    item = self._queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                progress, phase, message = item
+                self._write(progress, phase, message, force=(phase != self._last_phase))
+        except Exception:
+            self._fallback_error = Exception("progress writer thread failed")
+
+    def _write(self, progress: dict[str, Any], phase: str, message: str, force: bool = False) -> None:
+        now_ts = time.monotonic()
+        if not force and (now_ts - self._last_write_time) < self._min_interval:
+            return
+        try:
+            result = RefreshResult(
+                status=REFRESH_RUNNING,
+                target_date=self._target_date,
+                started_at=self._started_at,
+                updated_at=_timestamp(),
+                phase=phase,
+                progress=_progress_from_callback(progress),
+                message=message,
+            )
+            _write_status(self._root, result)
+            self._last_write_time = now_ts
+            self._last_phase = phase
+        except Exception:
+            pass  # 写盘失败不阻塞主流程
+
+    def _flush_remaining(self) -> None:
+        """同步 flush 剩余队列（回退路径）。"""
+        while not self._queue.empty():
+            try:
+                progress, phase, message = self._queue.get_nowait()
+                self._write(progress, phase, message, force=True)
+            except queue.Empty:
+                break
+            except Exception:
+                break
 
 
 class _RefreshLock:
