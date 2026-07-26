@@ -76,6 +76,11 @@ class FetchResult:
     share_rows: int
     errors: list[str]
     normalized_dir: Path
+    date_counts: dict[str, int] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.date_counts is None:
+            object.__setattr__(self, "date_counts", {})
 
 
 @dataclass(frozen=True)
@@ -92,6 +97,7 @@ class HistoryFetchOutcome:
     primary_error: str | None = None
     fallback_provider: str | None = None
     fallback_error: str | None = None
+    all_dates: tuple[str, ...] = ()
 
 
 class _FetchAborted(Exception):
@@ -310,6 +316,8 @@ def _rebuild_outcomes_from_checkpoint(
                 rows, latest_date = meta
                 provider = str(entry.get("provider") or "")
                 stale = bool(entry.get("stale", False))
+                # R3: 从 CSV 收集 all_dates（resume 启动时一次）
+                all_dates = _collect_all_dates_from_path(normalized_path, target)
                 outcome = HistoryFetchOutcome(
                     code=code,
                     name=name,
@@ -322,6 +330,7 @@ def _rebuild_outcomes_from_checkpoint(
                     primary_error=str(entry.get("primary_error") or "") or None,
                     fallback_provider=str(entry.get("fallback_provider") or "") or None,
                     fallback_error=str(entry.get("fallback_error") or "") or None,
+                    all_dates=all_dates,
                 )
                 outcomes.append(outcome)
                 history_rows += rows
@@ -344,6 +353,18 @@ def _rebuild_outcomes_from_checkpoint(
             continue
 
     return outcomes, failed_history, skipped_cached, fetched, history_errors, history_rows
+
+
+def _collect_all_dates_from_path(path: Path, target: pd.Timestamp) -> tuple[str, ...]:
+    """从 normalized history CSV 收集所有有效日期。"""
+    frame = _read_csv(path)
+    if frame is None or frame.empty or "日期" not in frame:
+        return ()
+    dates = pd.to_datetime(frame["日期"], errors="coerce").dropna()
+    dates = dates[dates <= target]
+    if dates.empty:
+        return ()
+    return tuple(sorted(dates.dt.date.astype(str).unique()))
 
 
 def _filter_pending_records(
@@ -473,6 +494,17 @@ def fetch_data(
     failed_history: list[dict[str, str]] = []
     history_outcomes: list[HistoryFetchOutcome] = []
 
+    # R3: 共享 date_counts（线程安全）
+    date_counts: dict[str, int] = {}
+    date_counts_lock = threading.Lock()
+
+    def _accumulate_date_counts(all_dates: tuple[str, ...]) -> None:
+        if not all_dates:
+            return
+        with date_counts_lock:
+            for d in all_dates:
+                date_counts[d] = date_counts.get(d, 0) + 1
+
     checkpoint_data: dict[str, Any] | None = None
     checkpoint_outcomes: dict[str, dict[str, Any]] = {}
     checkpoint_lock = threading.Lock()
@@ -494,6 +526,9 @@ def fetch_data(
                 completed_before_resume = len(rebuilt_outcomes)
                 completed = completed_before_resume
                 checkpoint_outcomes = {str(item.code): asdict(item) for item in rebuilt_outcomes}
+                # R3: resume 重建后累加 date_counts
+                for item in rebuilt_outcomes:
+                    _accumulate_date_counts(item.all_dates)
                 pending_records = _filter_pending_records(candidate_records, checkpoint_outcomes)
             else:
                 pending_records = candidate_records
@@ -554,6 +589,7 @@ def fetch_data(
                         )
 
                     history_outcomes.append(outcome)
+                    _accumulate_date_counts(outcome.all_dates)
                     completed += 1
                     history_rows += outcome.rows
                     if outcome.status == "cached":
@@ -668,6 +704,7 @@ def fetch_data(
             share_rows=len(shares),
             errors=errors,
             normalized_dir=normalized_dir,
+            date_counts=dict(date_counts),  # R3: 返回 date_counts 副本
         )
     except _FetchAborted:
         # Save checkpoint on abort so progress is not lost
@@ -770,19 +807,23 @@ def _load_or_fetch_spot(
 
 
 def _load_or_fetch_history(
-    ak: Any,
-    code: str,
-    name: str,
-    history_start: str,
-    target_ymd: str,
-    target: pd.Timestamp,
-    raw_history_dir: Path,
-    normalized_history_dir: Path,
-    resume: bool,
-    spot_history: pd.DataFrame | None = None,
+    ak: Any, code: str, name: str, history_start: str, target_ymd: str,
+    target: pd.Timestamp, raw_history_dir: Path, normalized_history_dir: Path,
+    resume: bool, spot_history: pd.DataFrame | None = None,
 ) -> HistoryFetchOutcome:
     raw_path = raw_history_dir / f"{code}.csv"
     normalized_path = normalized_history_dir / f"{code}.csv"
+
+    def _collect_dates(frame: pd.DataFrame | None) -> tuple[str, ...]:
+        if frame is None or frame.empty or "日期" not in frame:
+            return ()
+        dates = pd.to_datetime(frame["日期"], errors="coerce").dropna()
+        dates = dates[dates <= target]
+        if dates.empty:
+            return ()
+        return tuple(sorted(dates.dt.date.astype(str).unique()))
+
+    collected_all_dates: tuple[str, ...] = ()
 
     if resume:
         cached_meta = _valid_normalized_history_metadata(normalized_path, target)
@@ -790,31 +831,27 @@ def _load_or_fetch_history(
             rows, latest_date = cached_meta
             if latest_date == target.date().isoformat():
                 cached_source = _history_source_from_path(normalized_path) or "cache_normalized"
+                collected_all_dates = _collect_dates(_read_csv(normalized_path))
                 return HistoryFetchOutcome(
-                    code=code,
-                    name=name,
-                    status="cached",
-                    rows=rows,
-                    provider=cached_source,
-                    latest_date=latest_date,
-                    stale=False,
+                    code=code, name=name, status="cached", rows=rows,
+                    provider=cached_source, latest_date=latest_date, stale=False,
+                    all_dates=collected_all_dates,
                 )
+            # cached normalized stale → 用 spot 打补丁
             spot_meta = _write_history_with_spot_fallback(_read_csv(normalized_path), spot_history, normalized_path, target)
             if spot_meta is not None:
                 rows, latest_date = spot_meta
+                collected_all_dates = _collect_dates(_read_csv(normalized_path))
                 return HistoryFetchOutcome(
-                    code=code,
-                    name=name,
-                    status="fetched",
-                    rows=rows,
-                    provider="spot_fallback",
-                    latest_date=latest_date,
-                    stale=False,
+                    code=code, name=name, status="fetched", rows=rows,
+                    provider="spot_fallback", latest_date=latest_date, stale=False,
                     primary_provider="eastmoney",
                     primary_error="cached normalized history is stale; patched from current spot snapshot before primary refetch",
                     fallback_provider="spot_fallback",
+                    all_dates=collected_all_dates,
                 )
 
+        # cached raw history 路径
         raw_history = _read_csv(raw_path)
         if raw_history is not None:
             try:
@@ -825,33 +862,29 @@ def _load_or_fetch_history(
                     rows, latest_date = cached_meta
                     if latest_date == target.date().isoformat():
                         _write_csv(history, normalized_path)
+                        collected_all_dates = _collect_dates(history)
                         return HistoryFetchOutcome(
-                            code=code,
-                            name=name,
-                            status="cached",
-                            rows=rows,
-                            provider=raw_source,
-                            latest_date=latest_date,
-                            stale=False,
+                            code=code, name=name, status="cached", rows=rows,
+                            provider=raw_source, latest_date=latest_date, stale=False,
+                            all_dates=collected_all_dates,
                         )
+                    # cached raw stale → 用 spot 打补丁
                     spot_meta = _write_history_with_spot_fallback(history, spot_history, normalized_path, target)
                     if spot_meta is not None:
                         rows, latest_date = spot_meta
+                        collected_all_dates = _collect_dates(_read_csv(normalized_path))
                         return HistoryFetchOutcome(
-                            code=code,
-                            name=name,
-                            status="fetched",
-                            rows=rows,
-                            provider="spot_fallback",
-                            latest_date=latest_date,
-                            stale=False,
+                            code=code, name=name, status="fetched", rows=rows,
+                            provider="spot_fallback", latest_date=latest_date, stale=False,
                             primary_provider="eastmoney",
                             primary_error="cached raw history is stale; patched from current spot snapshot before primary refetch",
                             fallback_provider="spot_fallback",
+                            all_dates=collected_all_dates,
                         )
             except Exception:
                 pass
 
+    # 主拉取路径
     try:
         raw_history, provider, primary_error, fallback_error = _fetch_history_with_attempt_details(
             ak, code, history_start, target_ymd
@@ -862,65 +895,55 @@ def _load_or_fetch_history(
         history = _with_history_source(normalize_history(raw_history, code), provider)
         meta = _valid_history_metadata(history, target)
         if meta is None:
+            # 拉到但无效 → spot 兜底
             spot_meta = _write_history_with_spot_fallback(None, spot_history, normalized_path, target)
             if spot_meta is not None:
                 rows, latest_date = spot_meta
+                collected_all_dates = _collect_dates(_read_csv(normalized_path))
                 return HistoryFetchOutcome(
-                    code=code,
-                    name=name,
-                    status="fetched",
-                    rows=rows,
-                    provider="spot_fallback",
-                    latest_date=latest_date,
-                    stale=False,
-                    primary_provider="eastmoney",
-                    primary_error=primary_error,
+                    code=code, name=name, status="fetched", rows=rows,
+                    provider="spot_fallback", latest_date=latest_date, stale=False,
+                    primary_provider="eastmoney", primary_error=primary_error,
                     fallback_provider="spot_fallback",
+                    all_dates=collected_all_dates,
                 )
             return HistoryFetchOutcome(code=code, name=name, status="error", error="empty history")
         rows, latest_date = meta
         if latest_date != target.date().isoformat():
+            # 拉到但 stale → spot 打补丁
             spot_meta = _write_history_with_spot_fallback(history, spot_history, normalized_path, target)
             if spot_meta is not None:
                 rows, latest_date = spot_meta
+                collected_all_dates = _collect_dates(_read_csv(normalized_path))
                 return HistoryFetchOutcome(
-                    code=code,
-                    name=name,
-                    status="fetched",
-                    rows=rows,
-                    provider="spot_fallback",
-                    latest_date=latest_date,
-                    stale=False,
+                    code=code, name=name, status="fetched", rows=rows,
+                    provider="spot_fallback", latest_date=latest_date, stale=False,
+                    all_dates=collected_all_dates,
                 )
         _write_csv(history, normalized_path)
+        collected_all_dates = _collect_dates(history)
         return HistoryFetchOutcome(
-            code=code,
-            name=name,
-            status="fetched",
-            rows=rows,
-            provider=provider,
-            latest_date=latest_date,
+            code=code, name=name, status="fetched", rows=rows,
+            provider=provider, latest_date=latest_date,
             stale=latest_date != target.date().isoformat(),
             primary_provider=provider if _is_eastmoney_provider(provider) else "eastmoney",
             primary_error=primary_error,
             fallback_provider=provider if provider == "sina" else None,
             fallback_error=fallback_error,
+            all_dates=collected_all_dates,
         )
-    except Exception as exc:  # noqa: BLE001 - caller records per-code errors
+    except Exception as exc:
+        # 拉取异常 → spot 兜底
         spot_meta = _write_history_with_spot_fallback(None, spot_history, normalized_path, target)
         if spot_meta is not None:
             rows, latest_date = spot_meta
+            collected_all_dates = _collect_dates(_read_csv(normalized_path))
             return HistoryFetchOutcome(
-                code=code,
-                name=name,
-                status="fetched",
-                rows=rows,
-                provider="spot_fallback",
-                latest_date=latest_date,
-                stale=False,
-                primary_provider="eastmoney",
-                primary_error=str(exc),
+                code=code, name=name, status="fetched", rows=rows,
+                provider="spot_fallback", latest_date=latest_date, stale=False,
+                primary_provider="eastmoney", primary_error=str(exc),
                 fallback_provider="spot_fallback",
+                all_dates=collected_all_dates,
             )
         return HistoryFetchOutcome(code=code, name=name, status="error", error=str(exc))
 

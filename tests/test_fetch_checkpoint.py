@@ -449,5 +449,44 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(hist_rows, 1)
 
 
+class AllDatesOutcomeTests(unittest.TestCase):
+    def _raw_history(self, data_date: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "日期": ["2026-05-27", "2026-05-28", "2026-05-29"],
+                "开盘": [1.0, 1.1, 1.2], "最高": [1.1, 1.2, 1.3],
+                "最低": [0.9, 1.0, 1.1], "收盘": [1.0, 1.1, 1.2],
+                "成交额": [500_000_000, 600_000_000, 700_000_000],
+                "涨跌幅": [0.1, 0.1, 0.1],
+            }
+        )
+
+    def _fetch(self, fake_ak: _FakeAk, *args: object, **kwargs: object) -> object:
+        def fake_eastmoney(code: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
+            return fake_ak.fund_etf_hist_em(code, start_date=start_date, end_date=end_date), "eastmoney_mock"
+
+        with (
+            patch("trend_radar.fetcher._load_akshare", return_value=fake_ak),
+            patch("trend_radar.fetcher._fetch_history_eastmoney_with_provider", side_effect=fake_eastmoney),
+        ):
+            return fetch_data(*args, **kwargs)
+
+    def test_fetch_result_carries_date_counts(self) -> None:
+        """R3: fetch_data 返回 date_counts 字段"""
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_date = "2026-05-29"
+            fake_ak = _FakeAk({"159995": self._raw_history(data_date)}, spot_date=data_date)
+
+            result = self._fetch(fake_ak, data_date, root=root, codes=["159995"], resume=False, max_workers=2)
+
+            self.assertTrue(hasattr(result, "date_counts"))
+            self.assertIsInstance(result.date_counts, dict)
+            # 159995 在 3 个日期都有数据
+            self.assertEqual(result.date_counts.get("2026-05-29"), 1)
+            self.assertEqual(result.date_counts.get("2026-05-28"), 1)
+            self.assertEqual(result.date_counts.get("2026-05-27"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
