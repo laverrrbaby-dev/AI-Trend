@@ -838,13 +838,32 @@ def _refresh_status_view(
     return view
 
 
+# R5: fetch_report memoize 缓存
+_fetch_report_cache: dict[tuple[str, int], dict] = {}
+
+
 def _read_fetch_report(data_date: str) -> dict[str, Any] | None:
+    """R5: 按 (data_date, mtime_ns) memoize。"""
     path = ROOT / "data" / "normalized" / data_date / "fetch_report.json"
+    try:
+        mtime = path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return None
+    cache_key = (data_date, mtime)
+    cached = _fetch_report_cache.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    _fetch_report_cache[cache_key] = payload
+    # 简单 LRU：限制缓存大小
+    if len(_fetch_report_cache) > 50:
+        _fetch_report_cache.pop(next(iter(_fetch_report_cache)), None)
+    return payload
 
 
 def _history_report_view(report: dict[str, Any] | None) -> dict[str, Any] | None:
