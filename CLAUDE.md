@@ -116,3 +116,13 @@ History fetching has a multi-tier fallback: Eastmoney (urllib → curl → curl+
 - Live smoke uses `--codes` to limit to 3 specific ETFs, writes to `output/live-smoke/` (never pollutes `data/`).
 - Cache audit runs validate + audit on existing `data/` outputs.
 - Network diagnostics: `python scripts/diagnose_network.py` tests connectivity to data sources.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs use local Markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+This repository uses a single-context domain-doc layout. See `docs/agents/domain.md`.
