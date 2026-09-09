@@ -23,6 +23,7 @@ from trend_radar.us_stocks import (  # noqa: E402
     US_REFRESH_SUCCEEDED,
     US_CN_NAME_SEED,
     US_TOP_TURNOVER_LIMIT,
+    YAHOO_CHART_URL,
     fetch_us_top_turnover,
     latest_us_stock_cache_date,
     load_us_name_map,
@@ -32,9 +33,136 @@ from trend_radar.us_stocks import (  # noqa: E402
     refresh_us_stock_turnover,
     resolve_us_stock_target_date,
 )
+from trend_radar.us_stock_anomalies import evaluate_anomalies, serialize_anomaly_details
+from trend_radar.us_stock_news import load_cached_news, load_or_fetch_news
 
 
 class UsStocksTests(unittest.TestCase):
+    def test_refresh_persists_yahoo_history_and_anomaly_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            history_calls: list[str] = []
+
+            def scanner_fetch(url: str, headers: dict[str, str], payload: dict[str, object]) -> dict[str, object]:
+                return {"data": _tradingview_rows()}
+
+            def history_fetch(url: str, headers: dict[str, str], payload: dict[str, object]) -> dict[str, object]:
+                history_calls.append(url)
+                timestamps = [int(datetime(2026, 5, 1 + index, tzinfo=NEW_YORK).timestamp()) for index in range(20)]
+                return {
+                    "chart": {
+                        "result": [
+                            {
+                                "timestamp": timestamps,
+                                "indicators": {"quote": [{"close": [10.0] * 20, "volume": [100.0] * 20}]},
+                            }
+                        ]
+                    }
+                }
+
+            result = refresh_us_stock_turnover(
+                root=root,
+                now=datetime(2026, 6, 3, 17, 0, tzinfo=NEW_YORK),
+                fetch_json=scanner_fetch,
+                history_fetch_json=history_fetch,
+            )
+
+            snapshot = load_us_stock_snapshot(result.target_date, root)
+
+        self.assertEqual(len(history_calls), US_TOP_TURNOVER_LIMIT)
+        self.assertIn("异动等级", snapshot.columns)
+        self.assertIn("数据生成时间", snapshot.columns)
+        self.assertTrue((snapshot["异动数据状态"] == "历史数据完整").all())
+
+    def test_news_without_key_is_non_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict("os.environ", {}, clear=True):
+            result = load_or_fetch_news("AAA", "示例公司", "2026-06-03", root=Path(tempdir))
+
+        self.assertEqual(result["status"], "missing_key")
+        self.assertEqual(result["articles"], [])
+
+    def test_news_normalizes_two_articles_and_caches_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}):
+            calls: list[str] = []
+
+            def fake_fetch(url: str, headers: dict[str, str], payload: dict[str, object]) -> dict[str, object]:
+                calls.append(url)
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '[{"title_zh":"公司公告","summary_zh":"公司发布公开公告。","source":"示例来源","url":"https://example.com/a","published_at":"2026-06-03"},{"title_zh":"行业消息","summary_zh":"行业出现公开变化。","source":"另一来源","url":"https://example.com/b","published_at":"2026-06-03"},{"title_zh":"超出限制"}]'
+                            }
+                        }
+                    ]
+                }
+
+            first = load_or_fetch_news("AAA", "示例公司", "2026-06-03", root=Path(tempdir), fetch_json=fake_fetch)
+            second = load_or_fetch_news("AAA", "示例公司", "2026-06-03", root=Path(tempdir), fetch_json=fake_fetch)
+            cached = load_cached_news("AAA", "2026-06-03", root=Path(tempdir))
+
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(len(first["articles"]), 2)
+        self.assertEqual(second["articles"], first["articles"])
+        self.assertEqual(cached, first)
+        self.assertEqual(len(calls), 1)
+
+    def test_failed_news_request_is_retryable_and_invalid_links_are_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}):
+            calls = 0
+
+            def flaky_fetch(url: str, headers: dict[str, str], payload: dict[str, object]) -> dict[str, object]:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise RuntimeError("temporary failure")
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '[{"title_zh":"无效","summary_zh":"无效","source":"","url":"javascript:alert(1)"},{"title_zh":"有效","summary_zh":"公开报道。","source":"来源","url":"https://example.com/news"}]'
+                            }
+                        }
+                    ]
+                }
+
+            first = load_or_fetch_news("AAA", "示例公司", "2026-06-03", root=Path(tempdir), fetch_json=flaky_fetch)
+            second = load_or_fetch_news("AAA", "示例公司", "2026-06-03", root=Path(tempdir), fetch_json=flaky_fetch)
+
+        self.assertEqual(first["status"], "failed")
+        self.assertEqual(second["status"], "ok")
+        self.assertEqual(len(second["articles"]), 1)
+        self.assertEqual(calls, 2)
+
+    def test_anomaly_rules_mark_turnover_rank_and_price_facts(self) -> None:
+        snapshot = pd.DataFrame(
+            [
+                {"代码": "AAA", "成交额": 300.0, "涨跌幅": 12.0},
+                {"代码": "BBB", "成交额": 250.0, "涨跌幅": 6.0},
+            ]
+        )
+        previous = pd.DataFrame(
+            [{"代码": "BBB", "成交额": 2000.0}]
+            + [{"代码": f"X{index:02d}", "成交额": 1000 - index} for index in range(30)]
+            + [{"代码": "AAA", "成交额": 1.0}]
+        )
+        history = {"AAA": pd.DataFrame({"成交额": [100.0] * 20}), "BBB": pd.DataFrame({"成交额": [100.0] * 20})}
+
+        result = evaluate_anomalies(snapshot, history, previous)
+
+        self.assertEqual(result.loc[result["代码"] == "AAA", "异动等级"].item(), "强异动")
+        self.assertIn("成交额强放大", result.loc[result["代码"] == "AAA", "异动标签"].item())
+        self.assertIn("价格强异动", result.loc[result["代码"] == "AAA", "异动标签"].item())
+        self.assertEqual(result.loc[result["代码"] == "BBB", "异动等级"].item(), "关注")
+
+    def test_anomaly_details_report_insufficient_history_without_guessing(self) -> None:
+        snapshot = pd.DataFrame([{"代码": "AAA", "成交额": 300.0, "涨跌幅": 0.5}])
+
+        result = evaluate_anomalies(snapshot, {"AAA": pd.DataFrame({"成交额": [100.0]})})
+        details = serialize_anomaly_details(result.iloc[0])
+
+        self.assertEqual(details["成交额放大倍数"], None)
+        self.assertIn("历史数据不足", details["异动数据状态"])
     def test_target_date_uses_previous_weekday_before_market_complete(self) -> None:
         now = datetime(2026, 6, 3, 12, 0, tzinfo=NEW_YORK)
 

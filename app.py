@@ -6,6 +6,7 @@ import sys
 import threading
 from collections.abc import MutableMapping
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -73,10 +74,12 @@ from trend_radar.us_stocks import (  # noqa: E402
     refresh_us_stock_turnover,
     resolve_us_stock_target_date,
 )
+from trend_radar.us_stock_anomalies import serialize_anomaly_details  # noqa: E402
+from trend_radar.us_stock_news import load_cached_news, load_or_fetch_news  # noqa: E402
 
 
 STATUS_ORDER = ["强趋势", "趋势向上", "转强观察", "震荡观察", "弱观察", "数据不足"]
-MARKET_OPTIONS = ["A股ETF", "美股", "币圈现货"]
+MARKET_OPTIONS = ["美股", "A股ETF", "币圈现货"]
 DATE_SELECT_KEY = "selected_data_date"
 PENDING_DATE_SELECT_KEY = "pending_selected_data_date"
 MARKET_SELECT_KEY = "selected_market_tag"
@@ -130,6 +133,19 @@ TERM_HELP = {
     "趋势强度": "按 20/60/120 日涨幅加权，权重分别为 45%/35%/20%。",
     "趋势结构": "基于均线排列，MA20 > MA60 > MA120 得分最高，价格重新站上短中期均线视为修复。",
 }
+
+US_STOCK_TABLE_COMPONENT = components.declare_component(
+    "us_stock_interactive_table",
+    path=str(ROOT / "src" / "trend_radar" / "components" / "us_stock_table"),
+)
+
+if not os.environ.get("OPENROUTER_API_KEY"):
+    try:
+        configured_openrouter_key = str(st.secrets.get("OPENROUTER_API_KEY") or "").strip()
+    except Exception:  # noqa: BLE001 - local secrets are optional outside Streamlit runtime
+        configured_openrouter_key = ""
+    if configured_openrouter_key:
+        os.environ["OPENROUTER_API_KEY"] = configured_openrouter_key
 
 
 def main() -> None:
@@ -392,13 +408,80 @@ def _render_us_stock_turnover_page() -> None:
         st.warning("暂无可展示的美股成交额缓存，正在尝试拉取最新数据。")
         return
 
-    st.dataframe(
-        _display_us_stock_table(snapshot),
-        width="stretch",
-        hide_index=True,
-        height=35 * (len(snapshot) + 1) + 20,
-        column_config=_us_stock_table_columns(),
+    display_table = _display_us_stock_table(snapshot)
+    expanded_key = f"us-stock-expanded-{display_date}"
+    expanded_code = str(st.session_state.get(expanded_key) or "")
+    details_html = ""
+    news_loading = False
+    if expanded_code:
+        selected_snapshot = snapshot[snapshot["代码"].astype(str) == expanded_code]
+        if not selected_snapshot.empty and str(selected_snapshot.iloc[0].get("异动等级") or "") == "强异动":
+            selected_row = selected_snapshot.iloc[0]
+            cached_news = load_cached_news(expanded_code, display_date, root=ROOT)
+            if cached_news is None:
+                news_loading = True
+                _start_us_stock_news_fetch(selected_row, display_date)
+            details_html = _build_us_stock_detail_html(selected_row, display_date, metadata, news=cached_news)
+        else:
+            expanded_code = ""
+    interaction = US_STOCK_TABLE_COMPONENT(
+        rows=_build_us_stock_component_rows(display_table),
+        expanded_code=expanded_code,
+        details_html=details_html,
+        news_loading=news_loading,
+        key=f"us-stock-table-{display_date}",
+        default=None,
     )
+    event_key = f"us-stock-event-{display_date}"
+    event_id = interaction.get("eventId") if isinstance(interaction, dict) else None
+    if event_id is not None and st.session_state.get(event_key) != event_id:
+        st.session_state[event_key] = event_id
+        next_code = _resolve_us_stock_interaction(interaction, expanded_code, snapshot)
+    else:
+        next_code = expanded_code
+    if next_code != expanded_code:
+        st.session_state[expanded_key] = next_code
+        st.rerun()
+    if isinstance(interaction, dict) and interaction.get("type") == "poll" and news_loading:
+        poll_key = f"us-stock-news-poll-{display_date}"
+        if event_id is not None and st.session_state.get(poll_key) != event_id:
+            st.session_state[poll_key] = event_id
+            st.rerun()
+
+
+def _build_us_stock_component_rows(table: pd.DataFrame) -> list[dict[str, str]]:
+    return [
+        {column: "" if pd.isna(value) else str(value) for column, value in row.items()}
+        for row in table.to_dict(orient="records")
+    ]
+
+
+def _resolve_us_stock_interaction(
+    interaction: object,
+    expanded_code: str,
+    snapshot: pd.DataFrame,
+) -> str:
+    if not isinstance(interaction, dict) or interaction.get("type") != "toggle":
+        return expanded_code
+    code = str(interaction.get("code") or "")
+    matching = snapshot[(snapshot["代码"].astype(str) == code) & (snapshot["异动等级"].astype(str) == "强异动")]
+    if matching.empty:
+        return expanded_code
+    return "" if expanded_code == code else code
+
+
+def _start_us_stock_news_fetch(row: pd.Series, data_date: str) -> None:
+    code = str(row.get("代码") or "")
+    if not code:
+        return
+    thread_name = f"trend-radar-us-news-{data_date}-{code}"
+    if any(thread.name == thread_name and thread.is_alive() for thread in threading.enumerate()):
+        return
+
+    def fetch() -> None:
+        load_or_fetch_news(code, str(row.get("名称") or code), data_date, root=ROOT)
+
+    threading.Thread(target=fetch, name=thread_name, daemon=True).start()
 
 
 def _resolve_us_stock_display_date(target_date: str, available_dates: list[str], status: dict[str, Any]) -> str:
@@ -1516,7 +1599,8 @@ def _crypto_table_columns() -> dict[str, object]:
 
 def _display_us_stock_table(df: pd.DataFrame) -> pd.DataFrame:
     value_columns = ["代码", "名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"]
-    columns = ["序号", *value_columns]
+    has_anomalies = "异动等级" in df.columns
+    columns = ["序号", "关注", *value_columns] if has_anomalies else ["序号", *value_columns]
     if df.empty:
         return pd.DataFrame(columns=columns)
     source = df.copy()
@@ -1525,14 +1609,113 @@ def _display_us_stock_table(df: pd.DataFrame) -> pd.DataFrame:
     source = source.sort_values("成交额", ascending=False).reset_index(drop=True)
     table = source[value_columns].copy()
     table.insert(0, "序号", range(1, len(table) + 1))
+    if has_anomalies:
+        attention = source["异动等级"].map({"强异动": "🔴 强异动"}).fillna("")
+        table.insert(1, "关注", attention.tolist())
     table["成交额"] = table["成交额"].map(_format_usd_amount_zh)
     table["市值"] = table["市值"].map(_format_usd_amount_zh)
     return table
 
 
+def _style_us_stock_table(table: pd.DataFrame) -> pd.io.formats.style.Styler:
+    def row_style(row: pd.Series) -> list[str]:
+        marker = str(row.get("关注") or "")
+        if "强异动" in marker:
+            return ["background-color: #ffe0e0"] * len(row)
+        return [""] * len(row)
+
+    return table.style.apply(row_style, axis=1)
+
+
+def _build_us_stock_detail_html(
+    row: pd.Series,
+    data_date: str,
+    metadata: dict[str, Any] | None = None,
+    news: dict[str, Any] | None = None,
+) -> str:
+    details = serialize_anomaly_details(row)
+    metadata = metadata or {}
+    details["行情来源"] = str(row.get("source") or metadata.get("source") or "未记录")
+    details["数据生成时间"] = str(row.get("数据生成时间") or metadata.get("generated_at") or "未记录")
+    code = details["代码"] or "美股"
+    multiple = details["成交额放大倍数"]
+    metrics = [
+        f"异动等级：{details['异动等级']}",
+        f"命中标签：{details['异动标签'] or '-'}",
+        f"涨跌幅：{details['涨跌幅'] if details['涨跌幅'] is not None else '-'}%",
+        f"成交额放大：{multiple:.2f} 倍" if multiple is not None else "成交额放大：历史数据不足，未评估",
+        f"排名变化：{details['排名变化'] if details['排名变化'] is not None else '-'}",
+        f"异动阈值：{details['异动阈值'] or '-'}",
+        f"行情来源：{details['行情来源']}；生成时间：{details['数据生成时间']}",
+    ]
+    metric_html = "".join(f"<div>{escape(str(metric))}</div>" for metric in metrics)
+    news_html = "<div>新闻加载中…</div>"
+    if news is None:
+        pass
+    elif news.get("status") == "missing_key":
+        news_html = "<div>未配置 OPENROUTER_API_KEY，暂不加载新闻概览。</div>"
+    elif news.get("status") != "ok":
+        news_html = f"<div>{escape(str(news.get('message') or '新闻检索失败'))}</div>"
+    elif news.get("articles"):
+        articles: list[str] = []
+        for article in news["articles"]:
+            title = escape(str(article.get("title_zh") or "未命名新闻"))
+            summary = escape(str(article.get("summary_zh") or ""))
+            source = escape(str(article.get("source") or "未知来源"))
+            published_at = escape(str(article.get("published_at") or ""))
+            url = str(article.get("url") or "")
+            link = f"<a href='{escape(url, quote=True)}' target='_blank'>查看原文</a>" if url.startswith(("http://", "https://")) else ""
+            articles.append(f"<div class='news-item'><strong>{title}</strong><div>{summary}</div><small>{source} {published_at} {link}</small></div>")
+        news_html = "".join(articles)
+    return f"<div class='detail-card'><h4>{escape(code)} 异动详情</h4><div>{metric_html}</div><div><strong>当天新闻概览</strong>{news_html}</div></div>"
+
+
+def _render_us_stock_detail(row: pd.Series, data_date: str, metadata: dict[str, Any] | None = None) -> None:
+    details = serialize_anomaly_details(row)
+    metadata = metadata or {}
+    details["行情来源"] = str(row.get("source") or metadata.get("source") or "未记录")
+    details["数据生成时间"] = str(row.get("数据生成时间") or metadata.get("generated_at") or "未记录")
+    code = details["代码"] or "美股"
+    with st.expander(f"{code} 当日异动详情", expanded=True):
+        st.write(f"异动等级：{details['异动等级']}")
+        st.write(f"命中标签：{details['异动标签']}")
+        st.write(f"涨跌幅：{details['涨跌幅'] if details['涨跌幅'] is not None else '-'}%")
+        multiple = details["成交额放大倍数"]
+        st.write(f"成交额放大：{multiple:.2f} 倍" if multiple is not None else "成交额放大：历史数据不足，未评估")
+        st.write(f"排名变化：{details['排名变化'] if details['排名变化'] is not None else '-'}")
+        st.write(f"异动阈值：{details['异动阈值'] or '-'}")
+        st.write(f"行情来源：{details['行情来源']}；生成时间：{details['数据生成时间']}")
+        st.caption(str(details["异动数据状态"] or ""))
+        if details["异动等级"] == "无异动":
+            st.info("该股票当天未触发已配置的异动规则，暂不加载新闻概览。")
+        else:
+            st.divider()
+            st.subheader("当天新闻概览")
+            news = load_or_fetch_news(details["代码"], str(row.get("名称") or details["代码"]), data_date, root=ROOT)
+            if news.get("status") == "missing_key":
+                st.info("未配置 OPENROUTER_API_KEY，暂不加载新闻概览。")
+            elif news.get("status") != "ok":
+                st.warning(str(news.get("message") or "新闻检索失败"))
+            elif not news.get("articles"):
+                st.info("未检索到当天相关公开报道。")
+            else:
+                for article in news["articles"]:
+                    title = str(article.get("title_zh") or "未命名新闻")
+                    st.markdown(f"**{title}**")
+                    st.write(str(article.get("summary_zh") or ""))
+                    source = str(article.get("source") or "未知来源")
+                    published_at = str(article.get("published_at") or "")
+                    url = str(article.get("url") or "")
+                    suffix = f" · {published_at}" if published_at else ""
+                    st.caption(f"{source}{suffix}")
+                    if url:
+                        st.markdown(f"[查看原文]({url})")
+
+
 def _us_stock_table_columns() -> dict[str, object]:
     return {
         "序号": st.column_config.NumberColumn("序号", format="%d", width="small"),
+        "关注": st.column_config.TextColumn("关注", width="small"),
         "代码": st.column_config.TextColumn("代码", width="small"),
         "名称": st.column_config.TextColumn("名称", width="medium"),
         "最新价": st.column_config.NumberColumn("最新价", format="%.3f", width="small"),

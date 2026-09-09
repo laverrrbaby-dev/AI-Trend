@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #202124; }
+      .wrap { overflow-x: auto; }
+      table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; }
+      th { background: #f7f7f8; font-weight: 600; text-align: left; padding: 9px 10px; border-bottom: 1px solid #d9d9de; white-space: nowrap; }
+      td { padding: 9px 10px; border-bottom: 1px solid #ececf0; white-space: nowrap; }
+      tr.strong td { background: #ffe0e0; }
+      td.code { cursor: copy; font-weight: 600; }
+      td.expandable { cursor: pointer; }
+      .detail-row td { background: #fffafa; white-space: normal; vertical-align: top; }
+      .toast { position: fixed; right: 18px; top: 18px; padding: 8px 12px; background: #202124; color: #fff; border-radius: 4px; z-index: 9; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap"><table><thead></thead><tbody></tbody></table></div>
+    <script>
+      const columns = ["序号", "关注", "代码", "名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"];
+      let currentArgs = {};
+
+      function send(type, payload) {
+        window.parent.postMessage({ isStreamlitMessage: true, type, ...payload }, "*");
+      }
+
+      function setHeight() {
+        send("streamlit:setFrameHeight", { height: document.documentElement.scrollHeight });
+      }
+
+      function toggle(code) {
+        send("streamlit:setComponentValue", { value: { type: "toggle", code, eventId: Date.now() } });
+      }
+
+      function showCopied(code) {
+        const toast = document.createElement("div");
+        toast.className = "toast";
+        toast.textContent = `已复制 ${code}`;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 1200);
+      }
+
+      function copyCode(code) {
+        navigator.clipboard.writeText(code).then(() => showCopied(code));
+      }
+
+      function render(args) {
+        currentArgs = args || {};
+        const rows = currentArgs.rows || [];
+        const expandedCode = currentArgs.expanded_code || "";
+        const table = document.querySelector("table");
+        const thead = table.querySelector("thead");
+        const tbody = table.querySelector("tbody");
+        thead.replaceChildren();
+        tbody.replaceChildren();
+
+        const header = document.createElement("tr");
+        columns.forEach((column) => {
+          const th = document.createElement("th");
+          th.textContent = column;
+          header.appendChild(th);
+        });
+        thead.appendChild(header);
+
+        rows.forEach((row) => {
+          const code = row["代码"] || "";
+          const strong = String(row["关注"] || "").includes("强异动");
+          const tr = document.createElement("tr");
+          if (strong) tr.className = "strong";
+
+          columns.forEach((column) => {
+            const cell = document.createElement("td");
+            cell.textContent = row[column] || "";
+            if (column === "代码") {
+              cell.className = "code";
+              cell.title = "双击复制代码";
+              cell.addEventListener("dblclick", () => copyCode(code));
+            } else if (strong) {
+              cell.className = "expandable";
+              cell.addEventListener("dblclick", () => toggle(code));
+            }
+            tr.appendChild(cell);
+          });
+          tbody.appendChild(tr);
+
+          if (strong && expandedCode === code && currentArgs.details_html) {
+            const detailRow = document.createElement("tr");
+            detailRow.className = "detail-row";
+            const detailCell = document.createElement("td");
+            detailCell.colSpan = columns.length;
+            detailCell.innerHTML = currentArgs.details_html;
+            detailRow.appendChild(detailCell);
+            tbody.appendChild(detailRow);
+          }
+        });
+        setHeight();
+        if (currentArgs.news_loading) {
+          setTimeout(() => {
+            send("streamlit:setComponentValue", { value: { type: "poll", eventId: Date.now() } });
+          }, 800);
+        }
+      }
+
+      window.addEventListener("message", (event) => {
+        if (event.data.type === "streamlit:render") render(event.data.args);
+      });
+      send("streamlit:componentReady", { apiVersion: 1 });
+    </script>
+  </body>
+</html>

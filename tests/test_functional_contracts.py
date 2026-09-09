@@ -285,6 +285,38 @@ class FunctionalContractsTests(unittest.TestCase):
         self.assertEqual(columns["成交额"]["type_config"]["type"], "text")
         self.assertEqual(columns["市值"]["type_config"]["type"], "text")
 
+    def test_us_stock_interaction_only_toggles_strong_anomalies(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"序号": 1, "关注": "🔴 强异动", "代码": "LITE", "名称": "鲁门特姆", "最新价": "978.535", "涨跌幅": "+11.04%", "涨跌额": "+97.23", "成交额": "123.00亿", "市值": "500.00亿"},
+                {"序号": 2, "关注": "", "代码": "NVDA", "名称": "英伟达", "最新价": "225.730", "涨跌幅": "-2.01%", "涨跌额": "-4.63", "成交额": "276.66亿", "市值": "5.44万亿"},
+            ]
+        )
+
+        snapshot = pd.DataFrame([{"代码": "LITE", "异动等级": "强异动"}, {"代码": "NVDA", "异动等级": "无异动"}])
+
+        rows = app._build_us_stock_component_rows(table)
+        self.assertEqual(rows[0]["代码"], "LITE")
+        self.assertEqual(app._resolve_us_stock_interaction({"type": "toggle", "code": "LITE"}, "", snapshot), "LITE")
+        self.assertEqual(app._resolve_us_stock_interaction({"type": "toggle", "code": "LITE"}, "LITE", snapshot), "")
+        self.assertEqual(app._resolve_us_stock_interaction({"type": "toggle", "code": "NVDA"}, "", snapshot), "")
+
+    def test_us_stock_component_exposes_copy_and_expand_events(self) -> None:
+        component = (PROJECT_ROOT / "src/trend_radar/components/us_stock_table/index.html").read_text(encoding="utf-8")
+
+        self.assertIn('addEventListener("dblclick", () => copyCode(code))', component)
+        self.assertIn('addEventListener("dblclick", () => toggle(code))', component)
+        self.assertIn('streamlit:setComponentValue', component)
+        self.assertNotIn('detail-button', component)
+
+    def test_us_stock_detail_renders_before_news_fetch_completes(self) -> None:
+        row = pd.Series({"代码": "LITE", "名称": "鲁门特姆", "异动等级": "强异动", "异动标签": "价格强异动", "涨跌幅": 11.0})
+
+        detail_html = app._build_us_stock_detail_html(row, "2026-09-08", news=None)
+
+        self.assertIn("异动等级：强异动", detail_html)
+        self.assertIn("新闻加载中…", detail_html)
+
     def test_us_stock_display_date_prefers_latest_target_then_status_actual(self) -> None:
         self.assertEqual(app._resolve_us_stock_display_date("2026-06-03", ["2026-06-02", "2026-06-03"], {}), "2026-06-03")
         self.assertEqual(
@@ -293,7 +325,7 @@ class FunctionalContractsTests(unittest.TestCase):
         )
 
     def test_market_options_include_crypto_spot(self) -> None:
-        self.assertEqual(app.MARKET_OPTIONS, ["A股ETF", "美股", "币圈现货"])
+        self.assertEqual(app.MARKET_OPTIONS, ["美股", "A股ETF", "币圈现货"])
 
     def test_crypto_display_table_matches_requested_fields_and_order(self) -> None:
         frame = pd.DataFrame(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import ssl
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ import certifi
 import pandas as pd
 
 from .config import PROJECT_ROOT, ensure_data_dirs, now_shanghai
+from .us_stock_anomalies import evaluate_anomalies
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -31,6 +33,7 @@ US_REFRESH_SKIPPED = "skipped"
 
 TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
 NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=8000&offset=0&download=true"
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=3mo&interval=1d&events=div%2Csplits"
 US_TOP_TURNOVER_LIMIT = 30
 US_NAME_MAP_FILE = "name_map.csv"
 US_STOCK_COLUMNS = ["代码", "名称", "英文名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"]
@@ -75,6 +78,7 @@ _NASDAQ_HEADERS = {
     "Origin": "https://www.nasdaq.com",
     "Referer": "https://www.nasdaq.com/market-activity/stocks/screener",
 }
+_YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 US_CN_NAME_SEED = {
     "AAOI": "应用光电",
@@ -232,6 +236,7 @@ def refresh_us_stock_turnover(
     force: bool = False,
     now: datetime | None = None,
     fetch_json: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]] | None = None,
+    history_fetch_json: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]] | None = None,
 ) -> UsStockRefreshResult:
     target_date = resolve_us_stock_target_date(now)
     ensure_data_dirs(root)
@@ -241,6 +246,12 @@ def refresh_us_stock_turnover(
     metadata_json = _metadata_path(root, target_date)
 
     if cache_csv.exists() and not force:
+        cached_frame = load_us_stock_snapshot(target_date, root)
+        if "异动等级" not in cached_frame.columns:
+            cached_frame = _enrich_us_stock_anomalies(
+                cached_frame, root, target_date, fetch_json or _fetch_json, history_fetch_json
+            )
+            cached_frame.to_csv(cache_csv, index=False)
         metadata = load_us_stock_metadata(target_date, root)
         result = UsStockRefreshResult(
             status=US_REFRESH_SKIPPED,
@@ -307,8 +318,12 @@ def refresh_us_stock_turnover(
 
     generated_at = _timestamp()
     frame = frame.copy()
+    frame = _enrich_us_stock_anomalies(
+        frame, root, target_date, fetch_json or _fetch_json, history_fetch_json
+    )
     frame["数据日期"] = target_date
     frame["source"] = str(metadata["source"])
+    frame["数据生成时间"] = generated_at
     frame.to_csv(cache_csv, index=False)
     metadata = {
         **metadata,
@@ -339,6 +354,76 @@ def refresh_us_stock_turnover(
 def latest_us_stock_cache_date(root: Path = PROJECT_ROOT) -> str | None:
     dates = get_available_us_stock_dates(root)
     return dates[-1] if dates else None
+
+
+def _enrich_us_stock_anomalies(
+    frame: pd.DataFrame,
+    root: Path,
+    target_date: str,
+    fetch_json: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]],
+    history_fetch_json: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]] | None = None,
+) -> pd.DataFrame:
+    history_loader = history_fetch_json or (fetch_json if fetch_json is _fetch_json else None)
+    histories: dict[str, pd.DataFrame] = {}
+    for symbol in frame["代码"].astype(str).str.upper():
+        history = _load_cached_us_stock_history(root, symbol)
+        if len(history) < 20 and history_loader is not None:
+            try:
+                fetched = _fetch_yahoo_stock_history(symbol, history_loader)
+                if len(fetched) >= len(history):
+                    history = fetched
+                    _write_cached_us_stock_history(root, symbol, history)
+            except Exception:  # noqa: BLE001 - missing history is a visible data state
+                pass
+        histories[symbol] = history[history["日期"] < target_date].tail(20) if not history.empty else history
+    previous = _previous_cached_snapshot(root, target_date)
+    return evaluate_anomalies(frame, histories, previous)
+
+
+def _previous_cached_snapshot(root: Path, target_date: str) -> pd.DataFrame | None:
+    dates = [date for date in get_available_us_stock_dates(root) if date < target_date]
+    return load_us_stock_snapshot(dates[-1], root) if dates else None
+
+
+def _load_cached_us_stock_history(root: Path, symbol: str) -> pd.DataFrame:
+    path = _history_path(root, symbol)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return pd.DataFrame(columns=["日期", "收盘价", "成交量", "成交额"])
+    frame = pd.DataFrame(payload if isinstance(payload, list) else [])
+    for column in ["收盘价", "成交量", "成交额"]:
+        if column in frame:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame if {"日期", "成交额"}.issubset(frame.columns) else pd.DataFrame(columns=["日期", "成交额"])
+
+
+def _write_cached_us_stock_history(root: Path, symbol: str, frame: pd.DataFrame) -> None:
+    _history_path(root, symbol).write_text(
+        json.dumps(frame.to_dict(orient="records"), ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _fetch_yahoo_stock_history(
+    symbol: str,
+    fetch_json: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]],
+) -> pd.DataFrame:
+    payload = fetch_json(YAHOO_CHART_URL.format(symbol=urllib.parse.quote(symbol)), _YAHOO_HEADERS, {})
+    result = (payload.get("chart") or {}).get("result") or []
+    if not result:
+        return pd.DataFrame(columns=["日期", "收盘价", "成交量", "成交额"])
+    chart = result[0]
+    timestamps = chart.get("timestamp") or []
+    quote = ((chart.get("indicators") or {}).get("quote") or [{}])[0]
+    closes = quote.get("close") or []
+    volumes = quote.get("volume") or []
+    records = []
+    for timestamp, close, volume in zip(timestamps, closes, volumes):
+        if close is None or volume is None:
+            continue
+        date = datetime.fromtimestamp(int(timestamp), NEW_YORK).date().isoformat()
+        records.append({"日期": date, "收盘价": float(close), "成交量": float(volume), "成交额": float(close) * float(volume)})
+    return pd.DataFrame(records, columns=["日期", "收盘价", "成交量", "成交额"])
 
 
 def fetch_us_top_turnover(
@@ -583,12 +668,17 @@ def _fetch_json_once(url: str, headers: dict[str, str], payload: dict[str, Any],
 
 def _ensure_us_stock_dirs(root: Path) -> None:
     _cache_dir(root).mkdir(parents=True, exist_ok=True)
+    (root / "data" / "us_stocks" / "history").mkdir(parents=True, exist_ok=True)
     _name_map_path(root).parent.mkdir(parents=True, exist_ok=True)
     (root / "data" / "state").mkdir(parents=True, exist_ok=True)
 
 
 def _cache_dir(root: Path) -> Path:
     return root / "data" / "us_stocks" / "top_turnover"
+
+
+def _history_path(root: Path, symbol: str) -> Path:
+    return root / "data" / "us_stocks" / "history" / f"{symbol.upper()}.json"
 
 
 def _cache_csv_path(root: Path, data_date: str) -> Path:
