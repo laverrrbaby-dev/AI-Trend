@@ -134,10 +134,14 @@ TERM_HELP = {
     "趋势结构": "基于均线排列，MA20 > MA60 > MA120 得分最高，价格重新站上短中期均线视为修复。",
 }
 
-US_STOCK_TABLE_COMPONENT = components.declare_component(
-    "us_stock_interactive_table",
-    path=str(ROOT / "src" / "trend_radar" / "components" / "us_stock_table"),
-)
+if hasattr(components, "declare_component"):
+    US_STOCK_TABLE_COMPONENT = components.declare_component(
+        "us_stock_interactive_table",
+        path=str(ROOT / "src" / "trend_radar" / "components" / "us_stock_table"),
+    )
+else:
+    def US_STOCK_TABLE_COMPONENT(**kwargs: object) -> None:
+        return kwargs.get("default")  # type: ignore[return-value]
 
 if not os.environ.get("OPENROUTER_API_KEY"):
     try:
