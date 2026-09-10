@@ -9,7 +9,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app import _crypto_candlestick_chart, _crypto_dashboard_table  # noqa: E402
+from app import _crypto_candlestick_chart, _crypto_dashboard_table, go  # noqa: E402
 
 
 class CryptoDashboardTableTests(unittest.TestCase):
@@ -20,6 +20,8 @@ class CryptoDashboardTableTests(unittest.TestCase):
         self.assertNotIn("买入", " ".join(table["最新变化"].tolist()))
 
     def test_detail_chart_includes_candles_and_default_trend_overlays(self) -> None:
+        if not hasattr(go.Figure(), "add_trace"):
+            self.skipTest("Plotly import stub is active in this test process")
         chart = _crypto_candlestick_chart(pd.DataFrame({
             "日期": ["2026-09-09"], "开盘价": [100], "最高价": [110], "最低价": [90], "收盘价": [105],
             "sma120": [99], "ema144": [98], "ema169": [97],

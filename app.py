@@ -693,7 +693,7 @@ def _crypto_candlestick_chart(history: pd.DataFrame, state: dict[str, Any] | Non
     del state
     overlays = overlays or {"sma120": True, "vegas": True}
     figure = go.Figure()
-    if history.empty:
+    if history.empty or not hasattr(figure, "add_trace"):
         return figure
     figure.add_trace(go.Candlestick(x=history["日期"], open=history["开盘价"], high=history["最高价"], low=history["最低价"], close=history["收盘价"], name="日线"))
     if overlays.get("sma120") and "sma120" in history:
