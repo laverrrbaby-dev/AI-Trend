@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -28,6 +29,19 @@ class CryptoTrendSignalTests(unittest.TestCase):
         _, events = evaluate_crypto_signals("BTC", _frame(close), load_crypto_alert_config(PROJECT_ROOT))
         self.assertTrue(any(event.event_type == "ma120_cross" for event in events))
         self.assertTrue(all("买" not in event.message and "卖" not in event.message for event in events))
+
+    def test_divergence_uses_confirmed_pivots_and_detects_regular_and_hidden_forms(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("divergence",))
+        frame = _frame([100.0] * 20)
+        frame["td_up"] = 0
+        frame["td_down"] = 0
+        frame["swing_low_3"] = False
+        frame.loc[[5, 12], "swing_low_3"] = True
+        frame.loc[5, ["最低价", "macd_hist", "rsi14", "obv"]] = [90.0, -4.0, 25.0, 100.0]
+        frame.loc[12, ["最低价", "macd_hist", "rsi14", "obv"]] = [80.0, -2.0, 35.0, 200.0]
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+        self.assertEqual({event.direction for event in events}, {"普通看涨"})
+        self.assertEqual({event.confirmed_date for event in events}, {"2026-01-16"})
 
 
 def _frame(close: list[float]) -> pd.DataFrame:

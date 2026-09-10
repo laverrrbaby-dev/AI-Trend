@@ -112,22 +112,38 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
 
 
 def _add_divergence_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:
-    indicators = ("macd_hist", "rsi14", "obv")
-    for indicator in indicators:
-        if indicator not in frame:
-            continue
-        for index in range(2, len(frame)):
-            previous = index - 1
-            price_low = frame.iloc[index]["最低价"] < frame.iloc[previous]["最低价"]
-            price_high = frame.iloc[index]["最高价"] > frame.iloc[previous]["最高价"]
-            value_now = frame.iloc[index][indicator]
-            value_previous = frame.iloc[previous][indicator]
-            if pd.isna(value_now) or pd.isna(value_previous):
+    minimum = int(config.parameters["divergence_min_gap"])
+    maximum = int(config.parameters["divergence_max_gap"])
+    radius = int(config.parameters["divergence_match_radius"])
+    for pivot_column, price_column, is_low in (("swing_low_3", "最低价", True), ("swing_high_3", "最高价", False)):
+        pivot_indexes = [position for position, value in enumerate(frame.get(pivot_column, pd.Series(False, index=frame.index))) if bool(value)]
+        for previous, current in zip(pivot_indexes, pivot_indexes[1:]):
+            if not minimum <= current - previous <= maximum:
                 continue
-            if price_low and value_now > value_previous:
-                _append_event(events, symbol, "regular_divergence", "普通看涨", frame, index, config, f"{indicator}出现普通看涨背离")
-            elif price_high and value_now < value_previous:
-                _append_event(events, symbol, "regular_divergence", "普通看跌", frame, index, config, f"{indicator}出现普通看跌背离")
+            for indicator in ("macd_hist", "rsi14", "obv"):
+                if indicator not in frame:
+                    continue
+                before = _indicator_at_pivot(frame[indicator], previous, radius, is_low)
+                after = _indicator_at_pivot(frame[indicator], current, radius, is_low)
+                if pd.isna(before) or pd.isna(after):
+                    continue
+                price_before = float(frame.iloc[previous][price_column])
+                price_after = float(frame.iloc[current][price_column])
+                if is_low and price_after < price_before and after > before:
+                    _append_event(events, symbol, "regular_divergence", "普通看涨", frame, min(current + 3, len(frame) - 1), config, f"{indicator}出现普通看涨背离")
+                elif not is_low and price_after > price_before and after < before:
+                    _append_event(events, symbol, "regular_divergence", "普通看跌", frame, min(current + 3, len(frame) - 1), config, f"{indicator}出现普通看跌背离")
+                elif is_low and price_after > price_before and after < before:
+                    _append_event(events, symbol, "hidden_divergence", "隐藏看涨", frame, min(current + 3, len(frame) - 1), config, f"{indicator}出现隐藏看涨背离")
+                elif not is_low and price_after < price_before and after > before:
+                    _append_event(events, symbol, "hidden_divergence", "隐藏看跌", frame, min(current + 3, len(frame) - 1), config, f"{indicator}出现隐藏看跌背离")
+
+
+def _indicator_at_pivot(series: pd.Series, index: int, radius: int, is_low: bool) -> float:
+    window = series.iloc[max(0, index - radius) : index + radius + 1].dropna()
+    if window.empty:
+        return float("nan")
+    return float(window.min() if is_low else window.max())
 
 
 def _classify_trend(frame: pd.DataFrame) -> str:
