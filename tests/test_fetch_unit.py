@@ -288,10 +288,10 @@ class TestSinaTimeout(unittest.TestCase):
 
         # urllib 和 curl 都失败，sina 阻塞
         with patch("trend_radar.fetcher._fetch_history_eastmoney_with_provider", side_effect=RuntimeError("eastmoney down")):
-            start = time.time()
+            start = time.monotonic()
             with self.assertRaises(RuntimeError) as ctx:
                 _fetch_history_with_attempt_details(blocking_ak, "159995", "20260522", "20260529")
-            elapsed = time.time() - start
+            elapsed = time.monotonic() - start
             # 应在 ~10s 内超时（不是 30s）
             self.assertLess(elapsed, 15, f"sina should timeout, not block; elapsed={elapsed}")
             self.assertIn("sina", str(ctx.exception).lower())
