@@ -11,7 +11,7 @@ from .config import PROJECT_ROOT
 from .crypto_alert_config import load_crypto_alert_config
 from .crypto_alert_store import mark_crypto_symbol_review, publish_crypto_result
 from .crypto_indicators import calculate_indicators
-from .crypto_market_data import fetch_crypto_history
+from .crypto_market_data import fetch_crypto_history, fetch_latest_backup_candle
 from .crypto_signals import CryptoCurrentState, evaluate_crypto_signals
 
 _LOCK = threading.Lock()
@@ -36,6 +36,9 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
     for symbol in config.symbols:
         try:
             history = fetch_crypto_history(symbol, config, root, now=now, fetch_json=fetch_json)
+            backup = fetch_latest_backup_candle(symbol, config, now=now, fetch_json=fetch_json)
+            if not _backup_agrees(symbol, history.frame, backup, config):
+                raise ValueError("primary and backup close prices require review")
             frame = calculate_indicators(history.frame, config)
             state, events = evaluate_crypto_signals(symbol, frame, config)
             publish_crypto_result(root, state, events)
@@ -77,3 +80,17 @@ def _write_status(root: Path, status: dict[str, Any]) -> None:
     temporary = directory / "refresh_status.json.tmp"
     temporary.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(directory / "refresh_status.json")
+
+
+def _backup_agrees(symbol: str, primary, backup: dict[str, Any] | None, config) -> bool:
+    if backup is None or primary.empty:
+        return False
+    latest = primary.iloc[-1]
+    if str(latest["日期"]) != str(backup.get("日期")):
+        return False
+    primary_close = float(latest["收盘价"])
+    backup_close = float(backup["收盘价"])
+    if primary_close <= 0:
+        return False
+    limit = float(config.parameters["xaut_close_deviation_pct"] if symbol == "XAUT" else config.parameters["close_deviation_pct"])
+    return abs(primary_close - backup_close) / primary_close * 100 <= limit
