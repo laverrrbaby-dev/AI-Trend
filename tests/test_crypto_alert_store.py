@@ -4,15 +4,21 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+
+import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trend_radar.crypto_alert_store import (  # noqa: E402
     load_crypto_events,
+    load_crypto_dashboard,
     publish_crypto_result,
+    replay_crypto_history,
 )
+from trend_radar.crypto_alert_config import load_crypto_alert_config  # noqa: E402
 from trend_radar.crypto_signals import CryptoCurrentState, CryptoEvent  # noqa: E402
 
 
@@ -36,6 +42,20 @@ class CryptoAlertStoreTests(unittest.TestCase):
             state = CryptoCurrentState("ETH", "有变化", "震荡/未确认", event.message, event.candle_date, event.candle_date)
             dashboard = publish_crypto_result(root, state, [event])
             self.assertEqual(dashboard["unread_count"], 0)
+
+    def test_initial_replay_persists_baseline_and_historical_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            frame = pd.DataFrame({"日期": ["2026-09-09"], "收盘价": [100.0]})
+            with patch("trend_radar.crypto_alert_store.load_crypto_history", return_value=frame), \
+                 patch("trend_radar.crypto_alert_store.evaluate_crypto_signals", return_value=(
+                     CryptoCurrentState("BTC", "有变化", "震荡/未确认", "TD9：上涨计数", "2026-09-09", "2026-09-09"),
+                     [CryptoEvent("replay", "BTC", "td9", "上涨计数", "2026-09-09", "2026-09-09", "TD9：上涨计数", {}, "v1", "default")],
+                 )):
+                replay_crypto_history(root, load_crypto_alert_config(PROJECT_ROOT))
+            self.assertTrue((root / "data/crypto/alerts/baseline.json").exists())
+            self.assertTrue(load_crypto_events(root)[0]["historical_backfill"])
+            self.assertEqual(load_crypto_dashboard(root)["unread_count"], 0)
 
 
 if __name__ == "__main__":

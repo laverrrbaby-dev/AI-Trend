@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from .crypto_alert_config import CryptoAlertConfig
+from .crypto_market_data import load_crypto_history
 from .crypto_signals import CryptoCurrentState, CryptoEvent
+from .crypto_signals import evaluate_crypto_signals
 
 _LOCK = threading.Lock()
 
@@ -42,6 +46,22 @@ def load_crypto_events(root: Path, symbol: str | None = None) -> list[dict[str, 
 def load_crypto_dashboard(root: Path) -> dict[str, Any]:
     path = root / "data" / "crypto" / "alerts" / "dashboard.json"
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"unread_count": 0, "symbols": [], "events": []}
+
+
+def replay_crypto_history(root: Path, config: CryptoAlertConfig) -> None:
+    baseline_dates: list[str] = []
+    for symbol in config.symbols:
+        history = load_crypto_history(root, symbol)
+        if history.empty:
+            continue
+        window = history.tail(config.replay_bars)
+        state, events = evaluate_crypto_signals(symbol, window, config)
+        historical_events = [replace(event, historical_backfill=True) for event in events]
+        publish_crypto_result(root, state, historical_events)
+        baseline_dates.append(str(window.iloc[-1]["日期"]))
+    baseline = {"algorithm_version": config.algorithm_version, "preset_id": config.preset_id,
+                "date": max(baseline_dates) if baseline_dates else None}
+    _atomic_json(root / "data" / "crypto" / "alerts" / "baseline.json", baseline)
 
 
 def mark_crypto_symbol_read(root: Path, symbol: str, event_ids: list[str]) -> dict[str, Any]:
