@@ -82,6 +82,8 @@ _YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 US_CN_NAME_SEED = {
     "AAOI": "应用光电",
+    "BAC": "美国银行",
+    "BE": "布鲁姆能源",
     "MU": "美光科技",
     "NVDA": "英伟达",
     "MRVL": "迈威尔科技",
@@ -109,6 +111,7 @@ US_CN_NAME_SEED = {
     "QCOM": "高通",
     "MSTR": "策略公司（原微策略）",
     "CRWV": "科尔维夫",
+    "CRM": "赛富时",
     "NFLX": "奈飞",
     "CSCO": "思科",
     "WMT": "沃尔玛",
@@ -124,6 +127,10 @@ US_CN_NAME_SEED = {
     "LRCX": "泛林集团",
     "NBIS": "涅比乌斯集团",
     "UNH": "联合健康",
+    "SKHY": "SK海力士",
+    "SPCX": "太空探索技术公司",
+    "STX": "希捷科技",
+    "VRT": "维谛技术",
     "WDC": "西部数据",
 }
 

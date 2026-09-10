@@ -212,8 +212,11 @@ class UsStocksTests(unittest.TestCase):
             "AMAT": "应用材料",
             "ARM": "安谋控股",
             "ASML": "阿斯麦",
+            "BAC": "美国银行",
+            "BE": "布鲁姆能源",
             "BRK.B": "伯克希尔哈撒韦-B",
             "CRWD": "众击",
+            "CRM": "赛富时",
             "INHD": "英诺控股",
             "KLAC": "科磊",
             "LITE": "鲁门特姆",
@@ -223,7 +226,11 @@ class UsStocksTests(unittest.TestCase):
             "MSTR": "策略公司（原微策略）",
             "NBIS": "涅比乌斯集团",
             "PLTR": "帕兰蒂尔",
+            "SKHY": "SK海力士",
+            "SPCX": "太空探索技术公司",
+            "STX": "希捷科技",
             "UNH": "联合健康",
+            "VRT": "维谛技术",
             "WDC": "西部数据",
         }
 
