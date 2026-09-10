@@ -90,6 +90,16 @@ class CryptoTrendSignalTests(unittest.TestCase):
         _, events = evaluate_crypto_signals("BTC", frame, config)
         self.assertIn("delayed_false_break", [event.event_type for event in events])
 
+    def test_wick_past_confirmed_level_with_close_inside_is_same_day_rejection(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([100.0] * 10)
+        frame["td_up"] = 0
+        frame["swing_high_3"] = False
+        frame.loc[2, ["swing_high_3", "最高价"]] = [True, 110.0]
+        frame.loc[6, ["最高价", "收盘价"]] = [115.0, 108.0]
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+        self.assertIn("same_day_rejection", [event.event_type for event in events])
+
 
 def _frame(close: list[float]) -> pd.DataFrame:
     values = pd.Series(close, dtype=float)

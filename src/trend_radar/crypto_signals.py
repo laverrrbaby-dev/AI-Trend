@@ -112,6 +112,8 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
             level = float(frame.iloc[confirmed_highs[-1]]["最高价"])
             if previous_close <= level < close:
                 _append_event(events, symbol, "breakout", "向上", frame, index, config, "收盘突破已确认关键高点")
+            if high > level and close <= level:
+                _append_event(events, symbol, "same_day_rejection", "上方拒绝", frame, index, config, "日内越过关键高点后收盘回落")
             lookback = int(config.parameters["delayed_false_break_bars"])
             if close <= level and any(float(frame.iloc[position]["收盘价"]) > level for position in range(max(0, index - lookback), index)):
                 _append_event(events, symbol, "delayed_false_break", "向上回落", frame, index, config, "突破后回到关键高点内")
@@ -119,6 +121,8 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
             level = float(frame.iloc[confirmed_lows[-1]]["最低价"])
             if previous_close >= level > close:
                 _append_event(events, symbol, "breakout", "向下", frame, index, config, "收盘跌破已确认关键低点")
+            if low < level and close >= level:
+                _append_event(events, symbol, "same_day_rejection", "下方拒绝", frame, index, config, "日内跌破关键低点后收盘回升")
             lookback = int(config.parameters["delayed_false_break_bars"])
             if close >= level and any(float(frame.iloc[position]["收盘价"]) < level for position in range(max(0, index - lookback), index)):
                 _append_event(events, symbol, "delayed_false_break", "向下回升", frame, index, config, "跌破后回到关键低点内")
