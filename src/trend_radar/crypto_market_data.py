@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -166,7 +167,7 @@ def _normalize_rows(rows: list[Any], source: str, pair: str, now_utc: datetime) 
         elif in_progress is None or timestamp > int(in_progress["timestamp"]):
             item["is_complete"] = False
             in_progress = item
-    frame = pd.DataFrame(normalized, columns=CANDLE_COLUMNS).drop_duplicates("timestamp").sort_values("timestamp").reset_index(drop=True)
+    frame = pd.DataFrame(normalized, columns=CANDLE_COLUMNS).sort_values("timestamp").reset_index(drop=True)
     return frame, in_progress
 
 
@@ -177,6 +178,10 @@ def _validate_frame(frame: pd.DataFrame) -> None:
     numeric_values = frame[numeric].stack()
     if frame[numeric].isna().any().any() or not numeric_values.map(pd.api.types.is_number).all():
         raise ValueError("crypto candle values must be numeric")
+    if not numeric_values.map(lambda value: math.isfinite(float(value))).all():
+        raise ValueError("crypto candle values must be finite")
+    if (frame[["开盘价", "最高价", "最低价", "收盘价"]] <= 0).any().any():
+        raise ValueError("crypto candle prices must be positive")
     if (frame["最低价"] > frame[["开盘价", "收盘价"]].min(axis=1)).any():
         raise ValueError("crypto candle low is above open or close")
     if (frame["最高价"] < frame[["开盘价", "收盘价"]].max(axis=1)).any():

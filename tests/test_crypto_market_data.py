@@ -77,6 +77,15 @@ class CryptoMarketDataTests(unittest.TestCase):
                 fetch_crypto_history("BTC", load_crypto_alert_config(PROJECT_ROOT), Path(tempdir), now=NOW, fetch_json=fetch)
             self.assertFalse((Path(tempdir) / "data" / "crypto" / "alerts" / "history" / "BTC.csv").exists())
 
+    def test_non_finite_or_non_positive_price_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            def fetch(url: str, headers: dict[str, str]) -> object:
+                del url, headers
+                return [_binance_row("2026-09-09", 0.0, complete=True)]
+
+            with self.assertRaises(ValueError):
+                fetch_crypto_history("BTC", load_crypto_alert_config(PROJECT_ROOT), Path(tempdir), now=NOW, fetch_json=fetch)
+
 
 def _binance_row(day: str, close: float, complete: bool, low: float | None = None) -> list[object]:
     local_day = datetime.fromisoformat(f"{day}T00:00:00+00:00")

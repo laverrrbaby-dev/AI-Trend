@@ -57,6 +57,28 @@ def mark_crypto_symbol_read(root: Path, symbol: str, event_ids: list[str]) -> di
     return dashboard
 
 
+def mark_crypto_symbol_review(root: Path, symbol: str, error: str) -> dict[str, Any]:
+    directory = root / "data" / "crypto" / "alerts"
+    state_path = directory / "state" / f"{symbol}.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with _LOCK:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {
+            "symbol": symbol,
+            "status": "待复核",
+            "trend": "震荡/未确认",
+            "latest_change": "暂无新的策略变化",
+            "latest_change_date": None,
+            "data_date": None,
+        }
+        state.update({"status": "待复核", "quality": "待复核", "stale": True, "error": error})
+        _atomic_json(state_path, state)
+        states = [json.loads(path.read_text(encoding="utf-8")) for path in sorted((directory / "state").glob("*.json"))]
+        dashboard = load_crypto_dashboard(root)
+        dashboard["symbols"] = states
+        _atomic_json(directory / "dashboard.json", dashboard)
+        return dashboard
+
+
 def _event_payload(event: CryptoEvent) -> dict[str, Any]:
     return {"event_id": event.event_id, "symbol": event.symbol, "event_type": event.event_type, "direction": event.direction,
             "candle_date": event.candle_date, "confirmed_date": event.confirmed_date, "message": event.message,

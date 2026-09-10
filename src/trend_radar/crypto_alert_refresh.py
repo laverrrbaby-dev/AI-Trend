@@ -9,7 +9,7 @@ from typing import Any
 
 from .config import PROJECT_ROOT
 from .crypto_alert_config import load_crypto_alert_config
-from .crypto_alert_store import publish_crypto_result
+from .crypto_alert_store import mark_crypto_symbol_review, publish_crypto_result
 from .crypto_indicators import calculate_indicators
 from .crypto_market_data import fetch_crypto_history
 from .crypto_signals import CryptoCurrentState, evaluate_crypto_signals
@@ -42,6 +42,7 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
             statuses["symbols"][symbol] = {"phase": "succeeded", "data_date": state.data_date}
         except Exception as exc:  # a single coin must not abort the other four
             warnings.append(f"{symbol}: {exc}")
+            mark_crypto_symbol_review(root, symbol, str(exc))
             statuses["symbols"][symbol] = {"phase": "review", "error": str(exc)}
         completed += 1
         statuses["completed"] = completed
