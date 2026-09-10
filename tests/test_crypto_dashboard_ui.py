@@ -4,10 +4,12 @@ import sys
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app import _crypto_dashboard_table  # noqa: E402
+from app import _crypto_candlestick_chart, _crypto_dashboard_table  # noqa: E402
 
 
 class CryptoDashboardTableTests(unittest.TestCase):
@@ -16,6 +18,13 @@ class CryptoDashboardTableTests(unittest.TestCase):
         self.assertEqual(table["币种"].tolist(), ["BTC", "ETH", "SOL", "XAUT", "BNB"])
         self.assertEqual(list(table.columns), ["币种", "当前状态", "最新变化", "变化日期", "数据截至", "数据质量"])
         self.assertNotIn("买入", " ".join(table["最新变化"].tolist()))
+
+    def test_detail_chart_includes_candles_and_default_trend_overlays(self) -> None:
+        chart = _crypto_candlestick_chart(pd.DataFrame({
+            "日期": ["2026-09-09"], "开盘价": [100], "最高价": [110], "最低价": [90], "收盘价": [105],
+            "sma120": [99], "ema144": [98], "ema169": [97],
+        }))
+        self.assertEqual([trace.name for trace in chart.data], ["日线", "SMA120", "EMA144", "EMA169"])
 
 
 if __name__ == "__main__":

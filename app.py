@@ -82,6 +82,8 @@ from trend_radar.crypto_alert_refresh import (  # noqa: E402
 )
 from trend_radar.crypto_alert_store import load_crypto_dashboard  # noqa: E402
 from trend_radar.crypto_alert_config import load_crypto_alert_config  # noqa: E402
+from trend_radar.crypto_indicators import calculate_indicators  # noqa: E402
+from trend_radar.crypto_market_data import load_crypto_history  # noqa: E402
 
 
 STATUS_ORDER = ["强趋势", "趋势向上", "转强观察", "震荡观察", "弱观察", "数据不足"]
@@ -207,12 +209,15 @@ def _crypto_global_notice(status: dict[str, Any], session_state: MutableMapping[
 
 
 def _market_selector() -> str:
-    options = MARKET_OPTIONS
+    crypto_status = read_crypto_alert_refresh_status(ROOT)
+    crypto_status["unread_count"] = load_crypto_dashboard(ROOT).get("unread_count", 0)
+    crypto_label = _crypto_market_label(crypto_status)
+    options = ["美股", "A股ETF", crypto_label]
     if hasattr(st, "segmented_control"):
         selected = st.segmented_control("市场", options, default=options[0], key=MARKET_SELECT_KEY)
     else:
         selected = st.radio("市场", options, index=0, horizontal=True, key=MARKET_SELECT_KEY)
-    return str(selected or options[0])
+    return "币圈现货" if selected == crypto_label else str(selected or options[0])
 
 
 def _render_a_share_etf_page() -> None:
@@ -642,7 +647,6 @@ def _start_crypto_refresh_thread(force: bool) -> None:
 
 def _render_crypto_turnover_page() -> None:
     _render_crypto_alert_dashboard()
-    return
 
 
 def _render_crypto_alert_dashboard() -> None:
@@ -663,6 +667,9 @@ def _render_crypto_alert_dashboard() -> None:
         with st.expander(f"{state.get('symbol', '')} · {state.get('trend', '震荡/未确认')}"):
             st.write(state.get("latest_change", "暂无新的策略变化"))
             st.caption(f"数据截至 {state.get('data_date', '-')} · {state.get('quality', '正常')}")
+            history = load_crypto_history(ROOT, str(state.get("symbol")))
+            if not history.empty:
+                st.plotly_chart(_crypto_candlestick_chart(calculate_indicators(history, load_crypto_alert_config(ROOT)), state), use_container_width=True)
 
 
 def _crypto_dashboard_table(dashboard: dict[str, Any]) -> pd.DataFrame:
