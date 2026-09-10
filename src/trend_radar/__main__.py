@@ -14,6 +14,9 @@ from .fetcher import fetch_data
 from .refresh import REFRESH_FAILED, refresh_latest_data
 from .scoring import generate_scores
 from .validation import validate_outputs
+from .crypto_alert_refresh import refresh_crypto_alerts
+from .crypto_alert_store import load_crypto_dashboard
+from .config import PROJECT_ROOT
 
 
 def main() -> None:
@@ -45,6 +48,10 @@ def main() -> None:
 
     refresh_parser = subparsers.add_parser("refresh", help="Fetch and score the newest complete data if needed")
     refresh_parser.add_argument("--force", action="store_true", help="Fetch and score even when the target radar exists")
+
+    crypto_alert_parser = subparsers.add_parser("crypto-alerts", help="Refresh daily crypto spot attention alerts")
+    crypto_alert_parser.add_argument("--force", action="store_true")
+    crypto_alert_parser.add_argument("--format", choices=("table", "json"), default="table")
 
     args = parser.parse_args()
     if args.command in {"fetch", "score"}:
@@ -109,6 +116,18 @@ def main() -> None:
         if result.error:
             print(f"Error: {result.error}")
         if result.status == REFRESH_FAILED:
+            raise SystemExit(1)
+    elif args.command == "crypto-alerts":
+        result = refresh_crypto_alerts(PROJECT_ROOT, force=args.force)
+        dashboard = load_crypto_dashboard(PROJECT_ROOT)
+        if args.format == "json":
+            import json
+            print(json.dumps({"status": result.status, **dashboard}, ensure_ascii=False))
+        else:
+            print(f"币圈现货关注提醒：{result.status}")
+            for state in dashboard.get("symbols", []):
+                print(f"{state.get('symbol', '-')}: {state.get('status', '-')} | {state.get('latest_change', '-')} | {state.get('data_date', '-')}")
+        if result.status == "failed":
             raise SystemExit(1)
 
 

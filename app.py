@@ -76,6 +76,12 @@ from trend_radar.us_stocks import (  # noqa: E402
 )
 from trend_radar.us_stock_anomalies import serialize_anomaly_details  # noqa: E402
 from trend_radar.us_stock_news import load_cached_news, load_or_fetch_news  # noqa: E402
+from trend_radar.crypto_alert_refresh import (  # noqa: E402
+    read_crypto_alert_refresh_status,
+    start_crypto_alert_refresh_once,
+)
+from trend_radar.crypto_alert_store import load_crypto_dashboard  # noqa: E402
+from trend_radar.crypto_alert_config import load_crypto_alert_config  # noqa: E402
 
 
 STATUS_ORDER = ["强趋势", "趋势向上", "转强观察", "震荡观察", "弱观察", "数据不足"]
@@ -162,6 +168,7 @@ def main() -> None:
     _apply_style()
     _install_code_copy_handler()
     _install_lifecycle_heartbeat()
+    _start_crypto_background_work()
 
     market = _market_selector()
     if market == "美股":
@@ -170,6 +177,33 @@ def main() -> None:
         _render_crypto_turnover_page()
     else:
         _render_a_share_etf_page()
+
+
+def _start_crypto_background_work() -> bool:
+    """Start the process-wide crypto check before the market selector renders."""
+    try:
+        if not load_crypto_alert_config(ROOT).startup_refresh:
+            return False
+        return start_crypto_alert_refresh_once(ROOT)
+    except Exception:
+        return False
+
+
+def _crypto_market_label(status: dict[str, Any]) -> str:
+    unread = int(status.get("unread_count", 0) or 0)
+    return f"币圈现货 · {unread}" if unread else "币圈现货"
+
+
+def _crypto_global_notice(status: dict[str, Any], session_state: MutableMapping[str, Any]) -> str | None:
+    revision = str(status.get("finished_at") or status.get("started_at") or "")
+    if not revision or session_state.get("crypto_notice_revision") == revision:
+        return None
+    session_state["crypto_notice_revision"] = revision
+    if status.get("status") in {"partial", "failed"}:
+        return "币圈现货数据部分需要复核"
+    if int(status.get("unread_count", 0) or 0):
+        return f"币圈现货有 {status['unread_count']} 项新的策略变化"
+    return None
 
 
 def _market_selector() -> str:
@@ -607,6 +641,45 @@ def _start_crypto_refresh_thread(force: bool) -> None:
 
 
 def _render_crypto_turnover_page() -> None:
+    _render_crypto_alert_dashboard()
+    return
+
+
+def _render_crypto_alert_dashboard() -> None:
+    status = read_crypto_alert_refresh_status(ROOT)
+    notice = _crypto_global_notice(status, st.session_state)
+    if notice:
+        st.info(notice)
+    st.title("币圈现货关注提醒")
+    st.caption("日线 · UTC+8 · 仅提示策略变化，不构成交易指令")
+    if status.get("status") == "running":
+        st.caption(f"后台检查中：{status.get('completed', 0)}/{status.get('total', 5)}")
+    dashboard = load_crypto_dashboard(ROOT)
+    table = _crypto_dashboard_table(dashboard)
+    st.dataframe(table, use_container_width=True, hide_index=True)
+    if st.button("重新检查", key="crypto-alert-refresh"):
+        start_crypto_alert_refresh_once(ROOT, force=True)
+    for state in dashboard.get("symbols", []):
+        with st.expander(f"{state.get('symbol', '')} · {state.get('trend', '震荡/未确认')}"):
+            st.write(state.get("latest_change", "暂无新的策略变化"))
+            st.caption(f"数据截至 {state.get('data_date', '-')} · {state.get('quality', '正常')}")
+
+
+def _crypto_dashboard_table(dashboard: dict[str, Any]) -> pd.DataFrame:
+    fixed = ["BTC", "ETH", "SOL", "XAUT", "BNB"]
+    states = {item.get("symbol"): item for item in dashboard.get("symbols", [])}
+    rows = []
+    for symbol in fixed:
+        state = states.get(symbol, {})
+        rows.append({
+            "币种": symbol,
+            "当前状态": state.get("status", "待检查"),
+            "最新变化": state.get("latest_change", "暂无新的策略变化"),
+            "变化日期": state.get("latest_change_date", "-"),
+            "数据截至": state.get("data_date", "-"),
+            "数据质量": state.get("quality", "待检查"),
+        })
+    return pd.DataFrame(rows)
     target_date = resolve_crypto_target_date()
     refresh_started = _start_crypto_auto_refresh_once(target_date)
     available_dates = get_available_crypto_dates()

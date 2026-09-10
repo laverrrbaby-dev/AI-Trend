@@ -1,0 +1,36 @@
+{
+  "preset_id": "default",
+  "algorithm_version": "crypto-alerts-v1",
+  "timezone": "Asia/Shanghai",
+  "symbols": ["BTC", "ETH", "SOL", "XAUT", "BNB"],
+  "history_bars": 500,
+  "replay_bars": 180,
+  "startup_refresh": true,
+  "sources": {
+    "BTC": {"primary": "binance", "pair": "BTCUSDT", "backup": "okx", "backup_pair": "BTC-USDT"},
+    "ETH": {"primary": "binance", "pair": "ETHUSDT", "backup": "okx", "backup_pair": "ETH-USDT"},
+    "SOL": {"primary": "binance", "pair": "SOLUSDT", "backup": "okx", "backup_pair": "SOL-USDT"},
+    "XAUT": {"primary": "okx", "pair": "XAUT-USDT", "backup": "binance", "backup_pair": "XAUTUSDT"},
+    "BNB": {"primary": "binance", "pair": "BNBUSDT", "backup": "okx", "backup_pair": "BNB-USDT"}
+  },
+  "enabled_alerts": ["dow", "price_action", "divergence", "td", "ma120", "vegas"],
+  "parameters": {
+    "short_pivot": 3,
+    "main_pivot": 5,
+    "rsi_period": 14,
+    "atr_period": 14,
+    "sma_period": 120,
+    "vegas_fast": 144,
+    "vegas_slow": 169,
+    "divergence_min_gap": 5,
+    "divergence_max_gap": 60,
+    "divergence_match_radius": 2,
+    "touch_atr": 0.5,
+    "engulfing_body_ratio": 1.2,
+    "pin_wick_body_ratio": 2.0,
+    "pin_other_wick_body_max": 0.5,
+    "delayed_false_break_bars": 3,
+    "close_deviation_pct": 0.5,
+    "xaut_close_deviation_pct": 1.0
+  }
+}

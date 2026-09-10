@@ -33,6 +33,8 @@ python -m trend_radar fetch --date 2026-05-28
 python -m trend_radar score --date 2026-05-28
 python -m trend_radar refresh
 python -m trend_radar refresh --force
+python -m trend_radar crypto-alerts --format table
+python -m trend_radar crypto-alerts --force --format json
 python -m trend_radar backfill --months 1
 python -m trend_radar validate --start 2026-04-28 --end 2026-05-28
 python -m trend_radar audit --start 2026-04-28 --end 2026-05-29 --external --repair
@@ -89,5 +91,8 @@ streamlit run app.py
 - 完整 ETF 排行榜
 - 单 ETF 评分拆解、趋势图、成交额与份额变化图
 - 日期切换与历史榜单对比
+- 币圈现货固定五币（BTC、ETH、SOL、XAUT、BNB）日线关注提醒；应用启动后在后台执行，使用 UTC+8 完整 K 线
+
+币圈提醒数据写入 `data/crypto/alerts/`，默认配置为 `config/crypto_alerts.default.json`，可通过命名预设调整启用的提醒族和指标窗口。提醒只描述道氏结构、价格行为、MACD/RSI/OBV 背离、TD9/TD13、MA120 与 Vegas 通道的变化，不提供买卖或入场建议。
 
 后续可继续补自动调度、更多数据源交叉校验和通知。

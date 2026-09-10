@@ -42,5 +42,9 @@ def ensure_data_dirs(root: Path = PROJECT_ROOT) -> None:
         root / "data" / "normalized",
         root / "data" / "radar",
         root / "data" / "state",
+        root / "data" / "crypto" / "alerts" / "history",
+        root / "data" / "crypto" / "alerts" / "state",
+        root / "data" / "crypto" / "alerts" / "snapshots",
+        root / "data" / "crypto" / "alerts" / "presets",
     ]:
         path.mkdir(parents=True, exist_ok=True)
