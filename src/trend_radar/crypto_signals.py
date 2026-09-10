@@ -78,6 +78,9 @@ def _add_ma_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, 
             if before * after < 0:
                 direction = "上穿MA120" if after > 0 else "下穿MA120"
                 _append_event(events, symbol, "ma120_cross", direction, frame, index, config, f"价格发生{direction}")
+        if pd.notna(ma.iloc[index]) and pd.notna(frame.iloc[index].get("atr14")):
+            if abs(close.iloc[index] - ma.iloc[index]) <= float(config.parameters["touch_atr"]) * float(frame.iloc[index]["atr14"]):
+                _append_event(events, symbol, "ma120_touch", "触及MA120", frame, index, config, "价格接近MA120")
 
 
 def _add_vegas_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:
@@ -89,6 +92,10 @@ def _add_vegas_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFram
             _append_event(events, symbol, "vegas_break", "向上", frame, index, config, "Vegas通道向上突破")
         elif close.iloc[index - 1] >= lower.iloc[index - 1] and close.iloc[index] < lower.iloc[index]:
             _append_event(events, symbol, "vegas_break", "向下", frame, index, config, "Vegas通道向下突破")
+        if pd.notna(frame.iloc[index].get("atr14")):
+            distance = min(abs(close.iloc[index] - upper.iloc[index]), abs(close.iloc[index] - lower.iloc[index]))
+            if distance <= float(config.parameters["touch_atr"]) * float(frame.iloc[index]["atr14"]):
+                _append_event(events, symbol, "vegas_touch", "触及通道", frame, index, config, "价格接近Vegas通道")
 
 
 def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:

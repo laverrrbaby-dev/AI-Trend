@@ -56,6 +56,19 @@ class CryptoTrendSignalTests(unittest.TestCase):
         _, events = evaluate_crypto_signals("BTC", frame, config)
         self.assertEqual([(event.event_type, event.confirmed_date) for event in events], [("dow_change", "2026-01-16")])
 
+    def test_ma120_and_vegas_touch_events_use_atr_distance(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("ma120", "vegas"))
+        frame = _frame([100.0, 101.0, 102.0])
+        frame["td_up"] = 0
+        frame["sma120"] = [100.0, 100.0, 100.0]
+        frame["ema144"] = [100.0, 100.0, 100.0]
+        frame["ema169"] = [100.0, 100.0, 100.0]
+        frame["atr14"] = [4.0, 4.0, 4.0]
+        frame.loc[2, "收盘价"] = 101.0
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+        self.assertIn("ma120_touch", [event.event_type for event in events])
+        self.assertIn("vegas_touch", [event.event_type for event in events])
+
 
 def _frame(close: list[float]) -> pd.DataFrame:
     values = pd.Series(close, dtype=float)
