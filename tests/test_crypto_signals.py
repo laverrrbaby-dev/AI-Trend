@@ -69,6 +69,27 @@ class CryptoTrendSignalTests(unittest.TestCase):
         self.assertIn("ma120_touch", [event.event_type for event in events])
         self.assertIn("vegas_touch", [event.event_type for event in events])
 
+    def test_price_breakout_requires_a_confirmed_short_pivot_level(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([100.0] * 10)
+        frame["td_up"] = 0
+        frame["swing_high_3"] = False
+        frame.loc[2, ["swing_high_3", "最高价"]] = [True, 110.0]
+        frame.loc[6, "收盘价"] = 112.0
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+        self.assertIn("breakout", [event.event_type for event in events])
+
+    def test_return_inside_level_within_three_bars_is_delayed_false_break(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([100.0] * 10)
+        frame["td_up"] = 0
+        frame["swing_high_3"] = False
+        frame.loc[2, ["swing_high_3", "最高价"]] = [True, 110.0]
+        frame.loc[6, "收盘价"] = 112.0
+        frame.loc[7, "收盘价"] = 108.0
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+        self.assertIn("delayed_false_break", [event.event_type for event in events])
+
 
 def _frame(close: list[float]) -> pd.DataFrame:
     values = pd.Series(close, dtype=float)

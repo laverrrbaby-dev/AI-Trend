@@ -106,6 +106,22 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
         low = float(frame.iloc[index]["最低价"])
         previous_open = float(frame.iloc[index - 1]["开盘价"])
         previous_close = float(frame.iloc[index - 1]["收盘价"])
+        confirmed_highs = [position for position, value in enumerate(frame.get("swing_high_3", pd.Series(False, index=frame.index))) if bool(value) and position + 3 <= index]
+        confirmed_lows = [position for position, value in enumerate(frame.get("swing_low_3", pd.Series(False, index=frame.index))) if bool(value) and position + 3 <= index]
+        if confirmed_highs:
+            level = float(frame.iloc[confirmed_highs[-1]]["最高价"])
+            if previous_close <= level < close:
+                _append_event(events, symbol, "breakout", "向上", frame, index, config, "收盘突破已确认关键高点")
+            lookback = int(config.parameters["delayed_false_break_bars"])
+            if close <= level and any(float(frame.iloc[position]["收盘价"]) > level for position in range(max(0, index - lookback), index)):
+                _append_event(events, symbol, "delayed_false_break", "向上回落", frame, index, config, "突破后回到关键高点内")
+        if confirmed_lows:
+            level = float(frame.iloc[confirmed_lows[-1]]["最低价"])
+            if previous_close >= level > close:
+                _append_event(events, symbol, "breakout", "向下", frame, index, config, "收盘跌破已确认关键低点")
+            lookback = int(config.parameters["delayed_false_break_bars"])
+            if close >= level and any(float(frame.iloc[position]["收盘价"]) < level for position in range(max(0, index - lookback), index)):
+                _append_event(events, symbol, "delayed_false_break", "向下回升", frame, index, config, "跌破后回到关键低点内")
         body = abs(close - open_price)
         previous_body = abs(previous_close - previous_open)
         if body >= float(config.parameters["engulfing_body_ratio"]) * max(previous_body, 1e-12) and ((close > open_price > previous_close > previous_open) or (close < open_price < previous_close < previous_open)):
