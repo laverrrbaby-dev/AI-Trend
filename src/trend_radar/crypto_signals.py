@@ -51,7 +51,8 @@ def evaluate_crypto_signals(symbol: str, frame: pd.DataFrame, config: CryptoAler
         _add_vegas_events(events, symbol, values, config)
     trend = _classify_trend(values)
     if "dow" in config.enabled_alerts and trend != "震荡/未确认":
-        _append_event(events, symbol, "dow_change", trend, values, len(values) - 1, config, f"道氏结构变化：{trend}")
+        confirmation_index = _dow_confirmation_index(values)
+        _append_event(events, symbol, "dow_change", trend, values, confirmation_index, config, f"道氏结构变化：{trend}")
     latest = events[-1] if events else None
     return CryptoCurrentState(symbol, "有变化" if latest else "无新变化", trend,
                               latest.message if latest else "暂无新的策略变化",
@@ -154,6 +155,12 @@ def _classify_trend(frame: pd.DataFrame) -> str:
     higher = frame.loc[highs[-1], "最高价"] > frame.loc[highs[-2], "最高价"] and frame.loc[lows[-1], "最低价"] > frame.loc[lows[-2], "最低价"]
     lower = frame.loc[highs[-1], "最高价"] < frame.loc[highs[-2], "最高价"] and frame.loc[lows[-1], "最低价"] < frame.loc[lows[-2], "最低价"]
     return "上升结构" if higher else "下降结构" if lower else "震荡/未确认"
+
+
+def _dow_confirmation_index(frame: pd.DataFrame) -> int:
+    highs = frame.index[frame.get("swing_high_5", pd.Series(False, index=frame.index))].tolist()
+    lows = frame.index[frame.get("swing_low_5", pd.Series(False, index=frame.index))].tolist()
+    return min(max(int(highs[-1]), int(lows[-1])) + 5, len(frame) - 1)
 
 
 def _append_event(events: list[CryptoEvent], symbol: str, event_type: str, direction: str, frame: pd.DataFrame, index: int, config: CryptoAlertConfig, message: str) -> None:

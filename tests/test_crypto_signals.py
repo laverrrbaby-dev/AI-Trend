@@ -43,6 +43,19 @@ class CryptoTrendSignalTests(unittest.TestCase):
         self.assertEqual({event.direction for event in events}, {"普通看涨"})
         self.assertEqual({event.confirmed_date for event in events}, {"2026-01-16"})
 
+    def test_dow_event_uses_latest_pivot_confirmation_date(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("dow",))
+        frame = _frame([100.0] * 20)
+        frame["td_up"] = 0
+        frame["swing_high_5"] = False
+        frame["swing_low_5"] = False
+        frame.loc[[4, 10], "swing_high_5"] = True
+        frame.loc[[4, 10], "swing_low_5"] = True
+        frame.loc[4, ["最高价", "最低价"]] = [110.0, 90.0]
+        frame.loc[10, ["最高价", "最低价"]] = [120.0, 100.0]
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+        self.assertEqual([(event.event_type, event.confirmed_date) for event in events], [("dow_change", "2026-01-16")])
+
 
 def _frame(close: list[float]) -> pd.DataFrame:
     values = pd.Series(close, dtype=float)
