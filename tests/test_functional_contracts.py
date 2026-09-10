@@ -269,7 +269,7 @@ class FunctionalContractsTests(unittest.TestCase):
 
         table = app._display_us_stock_table(frame)
 
-        self.assertEqual(table.columns.tolist(), ["序号", "代码", "名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"])
+        self.assertEqual(table.columns.tolist(), ["序号", "代码", "名称", "涨跌幅", "最新价", "涨跌额", "成交额", "市值"])
         self.assertEqual(table["序号"].tolist(), [1, 2])
         self.assertEqual(table["代码"].tolist(), ["MU", "NVDA"])
         self.assertEqual(table.iloc[0]["成交额"], "501.07亿")
@@ -333,6 +333,7 @@ class FunctionalContractsTests(unittest.TestCase):
         self.assertNotIn('detail-button', component)
         self.assertNotIn('"关注"', component)
         self.assertIn('new Set(currentArgs.strong_codes || [])', component)
+        self.assertIn('const columns = ["序号", "代码", "名称", "涨跌幅", "最新价", "涨跌额", "成交额", "市值"]', component)
 
     def test_us_stock_detail_renders_before_news_fetch_completes(self) -> None:
         row = pd.Series({"代码": "LITE", "名称": "鲁门特姆", "异动等级": "强异动", "异动标签": "价格强异动", "涨跌幅": 11.0})

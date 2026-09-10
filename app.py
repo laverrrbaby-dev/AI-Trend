@@ -1605,7 +1605,7 @@ def _crypto_table_columns() -> dict[str, object]:
 
 
 def _display_us_stock_table(df: pd.DataFrame) -> pd.DataFrame:
-    value_columns = ["代码", "名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"]
+    value_columns = ["代码", "名称", "涨跌幅", "最新价", "涨跌额", "成交额", "市值"]
     columns = ["序号", *value_columns]
     if df.empty:
         return pd.DataFrame(columns=columns)
