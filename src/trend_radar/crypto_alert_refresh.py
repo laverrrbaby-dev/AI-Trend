@@ -11,7 +11,7 @@ from .config import PROJECT_ROOT
 from .crypto_alert_config import load_crypto_alert_config
 from .crypto_alert_store import mark_crypto_symbol_review, publish_crypto_result
 from .crypto_indicators import calculate_indicators
-from .crypto_market_data import fetch_crypto_history, fetch_latest_backup_candle
+from .crypto_market_data import fetch_crypto_history, fetch_latest_backup_candle, latest_complete_crypto_date
 from .crypto_signals import CryptoCurrentState, evaluate_crypto_signals
 
 _LOCK = threading.Lock()
@@ -27,9 +27,14 @@ class CryptoAlertRefreshResult:
 
 
 def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: datetime | None = None, fetch_json=None) -> CryptoAlertRefreshResult:
-    del force
     config = load_crypto_alert_config(root)
     baseline_path = root / "data" / "crypto" / "alerts" / "baseline.json"
+    target_date = latest_complete_crypto_date(now)
+    if not force and _baseline_matches(baseline_path, config.algorithm_version, config.preset_id, target_date):
+        status = {"status": "skipped", "completed": 0, "total": len(config.symbols), "target_date": target_date,
+                  "finished_at": datetime.now(UTC).isoformat(), "message": "当前完整日线已完成计算"}
+        _write_status(root, status)
+        return CryptoAlertRefreshResult("skipped", 0, len(config.symbols))
     initial_replay = not baseline_path.exists()
     completed_dates: list[str] = []
     statuses: dict[str, Any] = {"status": "running", "started_at": datetime.now(UTC).isoformat(), "completed": 0, "total": len(config.symbols), "symbols": {}}
@@ -94,6 +99,16 @@ def _write_baseline(path: Path, algorithm_version: str, preset_id: str, date: st
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps({"algorithm_version": algorithm_version, "preset_id": preset_id, "date": date}, ensure_ascii=False), encoding="utf-8")
     temporary.replace(path)
+
+
+def _baseline_matches(path: Path, algorithm_version: str, preset_id: str, target_date: str) -> bool:
+    if not path.exists():
+        return False
+    try:
+        baseline = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    return baseline == {"algorithm_version": algorithm_version, "preset_id": preset_id, "date": target_date}
 
 
 def _backup_agrees(symbol: str, primary, backup: dict[str, Any] | None, config) -> bool:

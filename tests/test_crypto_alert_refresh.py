@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from datetime import UTC, datetime
 
 import pandas as pd
 
@@ -68,6 +69,20 @@ class CryptoAlertRefreshTests(unittest.TestCase):
             dashboard = load_crypto_dashboard(root)
             self.assertEqual(dashboard["unread_count"], 0)
             self.assertTrue((root / "data/crypto/alerts/baseline.json").exists())
+
+    def test_completed_baseline_skips_network_unless_forced(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            alert_dir = root / "data/crypto/alerts"
+            alert_dir.mkdir(parents=True)
+            (alert_dir / "baseline.json").write_text('{"algorithm_version":"crypto-alerts-v1","preset_id":"default","date":"2026-09-09"}')
+            now = datetime(2026, 9, 10, 12, tzinfo=UTC)
+            with patch("trend_radar.crypto_alert_refresh.fetch_crypto_history", side_effect=AssertionError("network should be skipped")):
+                result = refresh_crypto_alerts(root, now=now)
+            self.assertEqual(result.status, "skipped")
+            with patch("trend_radar.crypto_alert_refresh.fetch_crypto_history", side_effect=RuntimeError("forced refresh reached network")):
+                forced = refresh_crypto_alerts(root, force=True, now=now)
+            self.assertEqual(forced.status, "partial")
 
 
 def _payload(url: str) -> object:
