@@ -57,6 +57,18 @@ class CryptoAlertRefreshTests(unittest.TestCase):
             btc = next(item for item in load_crypto_dashboard(root)["symbols"] if item["symbol"] == "BTC")
             self.assertEqual(btc["quality"], "待复核")
 
+    def test_first_successful_refresh_marks_detected_events_as_historical(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            frame = pd.DataFrame({"日期": ["2026-09-09"], "开盘价": [100.0], "最高价": [101.0], "最低价": [99.0], "收盘价": [100.0], "成交量": [1.0], "成交额": [100.0], "is_complete": [True]})
+            history = CryptoHistoryResult("BTC", "binance", "BTCUSDT", frame)
+            with patch("trend_radar.crypto_alert_refresh.fetch_crypto_history", return_value=history), \
+                 patch("trend_radar.crypto_alert_refresh.fetch_latest_backup_candle", return_value={"日期": "2026-09-09", "收盘价": 100.0}):
+                refresh_crypto_alerts(root)
+            dashboard = load_crypto_dashboard(root)
+            self.assertEqual(dashboard["unread_count"], 0)
+            self.assertTrue((root / "data/crypto/alerts/baseline.json").exists())
+
 
 def _payload(url: str) -> object:
     if "history-candles" in url:

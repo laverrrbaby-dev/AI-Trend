@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,9 @@ class CryptoAlertRefreshResult:
 def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: datetime | None = None, fetch_json=None) -> CryptoAlertRefreshResult:
     del force
     config = load_crypto_alert_config(root)
+    baseline_path = root / "data" / "crypto" / "alerts" / "baseline.json"
+    initial_replay = not baseline_path.exists()
+    completed_dates: list[str] = []
     statuses: dict[str, Any] = {"status": "running", "started_at": datetime.now(UTC).isoformat(), "completed": 0, "total": len(config.symbols), "symbols": {}}
     _write_status(root, statuses)
     warnings: list[str] = []
@@ -41,7 +44,9 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
                 raise ValueError("primary and backup close prices require review")
             frame = calculate_indicators(history.frame, config)
             state, events = evaluate_crypto_signals(symbol, frame, config)
-            publish_crypto_result(root, state, events)
+            publish_crypto_result(root, state, [replace(event, historical_backfill=True) for event in events] if initial_replay else events)
+            if state.data_date:
+                completed_dates.append(state.data_date)
             statuses["symbols"][symbol] = {"phase": "succeeded", "data_date": state.data_date}
         except Exception as exc:  # a single coin must not abort the other four
             warnings.append(f"{symbol}: {exc}")
@@ -51,6 +56,8 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
         statuses["completed"] = completed
         _write_status(root, statuses)
     statuses.update({"status": "succeeded" if not warnings else "partial", "finished_at": datetime.now(UTC).isoformat(), "warnings": warnings})
+    if initial_replay and completed_dates:
+        _write_baseline(baseline_path, config.algorithm_version, config.preset_id, max(completed_dates))
     _write_status(root, statuses)
     return CryptoAlertRefreshResult(statuses["status"], completed, len(config.symbols), tuple(warnings))
 
@@ -80,6 +87,13 @@ def _write_status(root: Path, status: dict[str, Any]) -> None:
     temporary = directory / "refresh_status.json.tmp"
     temporary.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(directory / "refresh_status.json")
+
+
+def _write_baseline(path: Path, algorithm_version: str, preset_id: str, date: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"algorithm_version": algorithm_version, "preset_id": preset_id, "date": date}, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
 
 
 def _backup_agrees(symbol: str, primary, backup: dict[str, Any] | None, config) -> bool:
