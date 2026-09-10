@@ -41,6 +41,10 @@ def evaluate_crypto_signals(symbol: str, frame: pd.DataFrame, config: CryptoAler
     events: list[CryptoEvent] = []
     if "td" in config.enabled_alerts:
         _add_td_events(events, symbol, values, config)
+    if "price_action" in config.enabled_alerts:
+        _add_price_action_events(events, symbol, values, config)
+    if "divergence" in config.enabled_alerts:
+        _add_divergence_events(events, symbol, values, config)
     if "ma120" in config.enabled_alerts:
         _add_ma_events(events, symbol, values, config)
     if "vegas" in config.enabled_alerts:
@@ -84,6 +88,46 @@ def _add_vegas_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFram
             _append_event(events, symbol, "vegas_break", "向上", frame, index, config, "Vegas通道向上突破")
         elif close.iloc[index - 1] >= lower.iloc[index - 1] and close.iloc[index] < lower.iloc[index]:
             _append_event(events, symbol, "vegas_break", "向下", frame, index, config, "Vegas通道向下突破")
+
+
+def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:
+    for index in range(1, len(frame)):
+        open_price = float(frame.iloc[index]["开盘价"])
+        close = float(frame.iloc[index]["收盘价"])
+        high = float(frame.iloc[index]["最高价"])
+        low = float(frame.iloc[index]["最低价"])
+        previous_open = float(frame.iloc[index - 1]["开盘价"])
+        previous_close = float(frame.iloc[index - 1]["收盘价"])
+        body = abs(close - open_price)
+        previous_body = abs(previous_close - previous_open)
+        if body >= float(config.parameters["engulfing_body_ratio"]) * max(previous_body, 1e-12) and ((close > open_price > previous_close > previous_open) or (close < open_price < previous_close < previous_open)):
+            direction = "阳线吞没" if close > open_price else "阴线吞没"
+            _append_event(events, symbol, "engulfing", direction, frame, index, config, f"价格行为变化：{direction}")
+        upper_wick = high - max(open_price, close)
+        lower_wick = min(open_price, close) - low
+        other = min(upper_wick, lower_wick)
+        if body > 0 and max(upper_wick, lower_wick) >= float(config.parameters["pin_wick_body_ratio"]) * body and other <= float(config.parameters["pin_other_wick_body_max"]) * body:
+            direction = "下影线" if lower_wick > upper_wick else "上影线"
+            _append_event(events, symbol, "pin_bar", direction, frame, index, config, f"价格行为变化：{direction}针形")
+
+
+def _add_divergence_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:
+    indicators = ("macd_hist", "rsi14", "obv")
+    for indicator in indicators:
+        if indicator not in frame:
+            continue
+        for index in range(2, len(frame)):
+            previous = index - 1
+            price_low = frame.iloc[index]["最低价"] < frame.iloc[previous]["最低价"]
+            price_high = frame.iloc[index]["最高价"] > frame.iloc[previous]["最高价"]
+            value_now = frame.iloc[index][indicator]
+            value_previous = frame.iloc[previous][indicator]
+            if pd.isna(value_now) or pd.isna(value_previous):
+                continue
+            if price_low and value_now > value_previous:
+                _append_event(events, symbol, "regular_divergence", "普通看涨", frame, index, config, f"{indicator}出现普通看涨背离")
+            elif price_high and value_now < value_previous:
+                _append_event(events, symbol, "regular_divergence", "普通看跌", frame, index, config, f"{indicator}出现普通看跌背离")
 
 
 def _classify_trend(frame: pd.DataFrame) -> str:

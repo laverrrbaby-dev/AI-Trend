@@ -680,6 +680,23 @@ def _crypto_dashboard_table(dashboard: dict[str, Any]) -> pd.DataFrame:
             "数据质量": state.get("quality", "待检查"),
         })
     return pd.DataFrame(rows)
+
+
+def _crypto_candlestick_chart(history: pd.DataFrame, state: dict[str, Any] | None = None, overlays: dict[str, bool] | None = None) -> go.Figure:
+    del state
+    overlays = overlays or {"sma120": True, "vegas": True}
+    figure = go.Figure()
+    if history.empty:
+        return figure
+    figure.add_trace(go.Candlestick(x=history["日期"], open=history["开盘价"], high=history["最高价"], low=history["最低价"], close=history["收盘价"], name="日线"))
+    if overlays.get("sma120") and "sma120" in history:
+        figure.add_trace(go.Scatter(x=history["日期"], y=history["sma120"], name="SMA120", mode="lines"))
+    if overlays.get("vegas"):
+        for column, name in (("ema144", "EMA144"), ("ema169", "EMA169")):
+            if column in history:
+                figure.add_trace(go.Scatter(x=history["日期"], y=history[column], name=name, mode="lines"))
+    figure.update_layout(height=520, xaxis_rangeslider_visible=False, margin={"l": 20, "r": 20, "t": 30, "b": 20})
+    return figure
     target_date = resolve_crypto_target_date()
     refresh_started = _start_crypto_auto_refresh_once(target_date)
     available_dates = get_available_crypto_dates()
