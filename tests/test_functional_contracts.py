@@ -274,6 +274,28 @@ class FunctionalContractsTests(unittest.TestCase):
         self.assertEqual(table["代码"].tolist(), ["MU", "NVDA"])
         self.assertEqual(table.iloc[0]["成交额"], "501.07亿")
         self.assertEqual(table.iloc[0]["市值"], "1.2万亿")
+        self.assertEqual(table["涨跌幅"].tolist(), ["+2.76%", "-0.69%"])
+
+    def test_us_stock_display_hides_attention_column_even_with_anomalies(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "代码": "LITE",
+                    "名称": "Lumentum",
+                    "最新价": 978.535,
+                    "涨跌幅": 11.04,
+                    "涨跌额": 97.23,
+                    "成交额": 12_300_000_000.0,
+                    "市值": 50_000_000_000.0,
+                    "异动等级": "强异动",
+                }
+            ]
+        )
+
+        table = app._display_us_stock_table(frame)
+
+        self.assertNotIn("关注", table.columns)
+        self.assertEqual(table.loc[0, "涨跌幅"], "+11.04%")
 
     def test_us_stock_table_columns_use_requested_formatting(self) -> None:
         columns = app._us_stock_table_columns()
@@ -284,12 +306,13 @@ class FunctionalContractsTests(unittest.TestCase):
         self.assertEqual(columns["涨跌额"]["type_config"]["format"], "%+.3f")
         self.assertEqual(columns["成交额"]["type_config"]["type"], "text")
         self.assertEqual(columns["市值"]["type_config"]["type"], "text")
+        self.assertNotIn("关注", columns)
 
     def test_us_stock_interaction_only_toggles_strong_anomalies(self) -> None:
         table = pd.DataFrame(
             [
-                {"序号": 1, "关注": "🔴 强异动", "代码": "LITE", "名称": "鲁门特姆", "最新价": "978.535", "涨跌幅": "+11.04%", "涨跌额": "+97.23", "成交额": "123.00亿", "市值": "500.00亿"},
-                {"序号": 2, "关注": "", "代码": "NVDA", "名称": "英伟达", "最新价": "225.730", "涨跌幅": "-2.01%", "涨跌额": "-4.63", "成交额": "276.66亿", "市值": "5.44万亿"},
+                {"序号": 1, "代码": "LITE", "名称": "鲁门特姆", "最新价": "978.535", "涨跌幅": "+11.04%", "涨跌额": "+97.23", "成交额": "123.00亿", "市值": "500.00亿"},
+                {"序号": 2, "代码": "NVDA", "名称": "英伟达", "最新价": "225.730", "涨跌幅": "-2.01%", "涨跌额": "-4.63", "成交额": "276.66亿", "市值": "5.44万亿"},
             ]
         )
 
@@ -308,6 +331,8 @@ class FunctionalContractsTests(unittest.TestCase):
         self.assertIn('addEventListener("dblclick", () => toggle(code))', component)
         self.assertIn('streamlit:setComponentValue', component)
         self.assertNotIn('detail-button', component)
+        self.assertNotIn('"关注"', component)
+        self.assertIn('new Set(currentArgs.strong_codes || [])', component)
 
     def test_us_stock_detail_renders_before_news_fetch_completes(self) -> None:
         row = pd.Series({"代码": "LITE", "名称": "鲁门特姆", "异动等级": "强异动", "异动标签": "价格强异动", "涨跌幅": 11.0})

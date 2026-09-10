@@ -18,7 +18,7 @@
   <body>
     <div class="wrap"><table><thead></thead><tbody></tbody></table></div>
     <script>
-      const columns = ["序号", "关注", "代码", "名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"];
+      const columns = ["序号", "代码", "名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"];
       let currentArgs = {};
 
       function send(type, payload) {
@@ -48,6 +48,7 @@
       function render(args) {
         currentArgs = args || {};
         const rows = currentArgs.rows || [];
+        const strongCodes = new Set(currentArgs.strong_codes || []);
         const expandedCode = currentArgs.expanded_code || "";
         const table = document.querySelector("table");
         const thead = table.querySelector("thead");
@@ -65,7 +66,7 @@
 
         rows.forEach((row) => {
           const code = row["代码"] || "";
-          const strong = String(row["关注"] || "").includes("强异动");
+          const strong = strongCodes.has(code);
           const tr = document.createElement("tr");
           if (strong) tr.className = "strong";
 

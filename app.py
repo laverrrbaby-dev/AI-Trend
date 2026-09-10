@@ -430,6 +430,9 @@ def _render_us_stock_turnover_page() -> None:
             expanded_code = ""
     interaction = US_STOCK_TABLE_COMPONENT(
         rows=_build_us_stock_component_rows(display_table),
+        strong_codes=snapshot.loc[snapshot["异动等级"].astype(str) == "强异动", "代码"].astype(str).tolist()
+        if "异动等级" in snapshot.columns
+        else [],
         expanded_code=expanded_code,
         details_html=details_html,
         news_loading=news_loading,
@@ -1603,8 +1606,7 @@ def _crypto_table_columns() -> dict[str, object]:
 
 def _display_us_stock_table(df: pd.DataFrame) -> pd.DataFrame:
     value_columns = ["代码", "名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"]
-    has_anomalies = "异动等级" in df.columns
-    columns = ["序号", "关注", *value_columns] if has_anomalies else ["序号", *value_columns]
+    columns = ["序号", *value_columns]
     if df.empty:
         return pd.DataFrame(columns=columns)
     source = df.copy()
@@ -1613,9 +1615,7 @@ def _display_us_stock_table(df: pd.DataFrame) -> pd.DataFrame:
     source = source.sort_values("成交额", ascending=False).reset_index(drop=True)
     table = source[value_columns].copy()
     table.insert(0, "序号", range(1, len(table) + 1))
-    if has_anomalies:
-        attention = source["异动等级"].map({"强异动": "🔴 强异动"}).fillna("")
-        table.insert(1, "关注", attention.tolist())
+    table["涨跌幅"] = table["涨跌幅"].map(_format_us_stock_change_percent)
     table["成交额"] = table["成交额"].map(_format_usd_amount_zh)
     table["市值"] = table["市值"].map(_format_usd_amount_zh)
     return table
@@ -1719,7 +1719,6 @@ def _render_us_stock_detail(row: pd.Series, data_date: str, metadata: dict[str, 
 def _us_stock_table_columns() -> dict[str, object]:
     return {
         "序号": st.column_config.NumberColumn("序号", format="%d", width="small"),
-        "关注": st.column_config.TextColumn("关注", width="small"),
         "代码": st.column_config.TextColumn("代码", width="small"),
         "名称": st.column_config.TextColumn("名称", width="medium"),
         "最新价": st.column_config.NumberColumn("最新价", format="%.3f", width="small"),
@@ -1728,6 +1727,13 @@ def _us_stock_table_columns() -> dict[str, object]:
         "成交额": st.column_config.TextColumn("成交额", width="small"),
         "市值": st.column_config.TextColumn("市值", width="small"),
     }
+
+
+def _format_us_stock_change_percent(value: object) -> str:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "-"
+    return f"{float(numeric):+.2f}%"
 
 
 def _format_usd_amount_zh(value: object) -> str:
