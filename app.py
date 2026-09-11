@@ -681,12 +681,12 @@ def _render_crypto_alert_dashboard() -> None:
         symbol = str(state.get("symbol", ""))
         with st.expander(f"{symbol} · {state.get('trend', '震荡/未确认')}"):
             st.write(state.get("latest_change", "暂无新的策略变化"))
-            st.caption(f"数据截至 {state.get('data_date', '-')} · {state.get('quality', '正常')}")
+            history = load_crypto_history(ROOT, symbol)
+            st.caption(f"数据截至 {state.get('data_date', '-')} · {state.get('quality', '正常')} · {crypto_history_source_caption(history)}")
             unread_event_ids = crypto_unread_event_ids(dashboard, symbol)
             if unread_event_ids and st.button("标记该币种已读", key=f"crypto-alert-read-{symbol}"):
                 mark_crypto_symbol_read(ROOT, symbol, unread_event_ids)
                 st.success("该币种的新提醒已标记为已读。")
-            history = load_crypto_history(ROOT, symbol)
             if not history.empty:
                 overlays = {
                     "sma120": st.checkbox("显示 MA120", value=True, key=f"crypto-alert-ma120-{symbol}"),
@@ -768,6 +768,15 @@ def crypto_unread_event_ids(dashboard: dict[str, Any], symbol: str) -> list[str]
         and not event.get("historical_backfill", False)
         and event.get("event_id")
     ]
+
+
+def crypto_history_source_caption(history: pd.DataFrame) -> str:
+    if history.empty or "source" not in history or "pair" not in history:
+        return "实际行情来源：未取得"
+    latest = history.iloc[-1]
+    source = str(latest.get("source", "")).upper() or "未取得"
+    pair = str(latest.get("pair", "")).upper() or "-"
+    return f"实际行情来源：{source} · {pair}"
 
 
 def _crypto_candlestick_chart(history: pd.DataFrame, state: dict[str, Any] | None = None, overlays: dict[str, bool] | None = None) -> go.Figure:

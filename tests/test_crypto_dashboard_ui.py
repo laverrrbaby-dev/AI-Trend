@@ -12,12 +12,18 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from app import (  # noqa: E402
     _crypto_candlestick_chart,
     _crypto_dashboard_table,
+    crypto_history_source_caption,
     crypto_unread_event_ids,
     go,
 )
 
 
 class CryptoDashboardTableTests(unittest.TestCase):
+    def test_history_source_caption_uses_cached_actual_source_and_pair(self) -> None:
+        history = pd.DataFrame({"source": ["okx"], "pair": ["BTC-USDT"]})
+
+        self.assertEqual(crypto_history_source_caption(history), "实际行情来源：OKX · BTC-USDT")
+
     def test_crypto_unread_event_ids_excludes_history_and_other_symbols(self) -> None:
         dashboard = {"events": [
             {"event_id": "btc-new", "symbol": "BTC", "historical_backfill": False},
