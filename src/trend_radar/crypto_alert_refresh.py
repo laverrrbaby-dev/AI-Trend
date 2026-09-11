@@ -35,7 +35,7 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
                   "finished_at": datetime.now(UTC).isoformat(), "message": "当前完整日线已完成计算"}
         _write_status(root, status)
         return CryptoAlertRefreshResult("skipped", 0, len(config.symbols))
-    initial_replay = not baseline_path.exists()
+    historical_replay = _baseline_requires_replay(baseline_path, config.algorithm_version, config.preset_id)
     completed_dates: list[str] = []
     statuses: dict[str, Any] = {"status": "running", "started_at": datetime.now(UTC).isoformat(), "completed": 0, "total": len(config.symbols), "symbols": {}}
     _write_status(root, statuses)
@@ -47,9 +47,11 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
             backup = fetch_latest_backup_candle(symbol, config, now=now, fetch_json=fetch_json)
             if not _backup_agrees(symbol, history.frame, backup, config):
                 raise ValueError("primary and backup close prices require review")
-            frame = calculate_indicators(history.frame, config)
+            replay_window = history.frame.tail(config.replay_bars) if historical_replay else history.frame
+            frame = calculate_indicators(replay_window, config)
             state, events = evaluate_crypto_signals(symbol, frame, config)
-            publish_crypto_result(root, state, [replace(event, historical_backfill=True) for event in events] if initial_replay else events)
+            sourced_events = [replace(event, evidence={**event.evidence, "source": history.source}) for event in events]
+            publish_crypto_result(root, state, [replace(event, historical_backfill=True) for event in sourced_events] if historical_replay else sourced_events)
             if state.data_date:
                 completed_dates.append(state.data_date)
             statuses["symbols"][symbol] = {"phase": "succeeded", "data_date": state.data_date}
@@ -61,7 +63,7 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
         statuses["completed"] = completed
         _write_status(root, statuses)
     statuses.update({"status": "succeeded" if not warnings else "partial", "finished_at": datetime.now(UTC).isoformat(), "warnings": warnings})
-    if initial_replay and completed_dates:
+    if historical_replay and completed_dates:
         _write_baseline(baseline_path, config.algorithm_version, config.preset_id, max(completed_dates))
     _write_status(root, statuses)
     return CryptoAlertRefreshResult(statuses["status"], completed, len(config.symbols), tuple(warnings))
@@ -119,6 +121,16 @@ def _baseline_matches(path: Path, algorithm_version: str, preset_id: str, target
     except json.JSONDecodeError:
         return False
     return baseline == {"algorithm_version": algorithm_version, "preset_id": preset_id, "date": target_date}
+
+
+def _baseline_requires_replay(path: Path, algorithm_version: str, preset_id: str) -> bool:
+    if not path.exists():
+        return True
+    try:
+        baseline = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return True
+    return baseline.get("algorithm_version") != algorithm_version or baseline.get("preset_id") != preset_id
 
 
 def _backup_agrees(symbol: str, primary, backup: dict[str, Any] | None, config) -> bool:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,6 +80,7 @@ def _parse(payload: dict[str, Any], preset_id: str) -> CryptoAlertConfig:
             backup_pair=str(raw["backup_pair"]),
         )
     parameters = {str(key): value for key, value in (payload.get("parameters") or {}).items()}
+    _validate_parameters(parameters)
     return CryptoAlertConfig(
         preset_id=preset_id,
         algorithm_version=str(payload.get("algorithm_version", ALGORITHM_VERSION)),
@@ -147,3 +149,21 @@ def _load_active_preset_id(root: Path) -> str:
     if preset_id != "default" and not _PRESET_RE.fullmatch(preset_id):
         raise ValueError("invalid active crypto alert preset")
     return preset_id
+
+
+def _validate_parameters(parameters: dict[str, Any]) -> None:
+    positive = {
+        "short_pivot", "main_pivot", "rsi_period", "atr_period", "sma_period", "vegas_fast", "vegas_slow",
+        "divergence_min_gap", "divergence_max_gap", "divergence_match_radius", "touch_atr",
+        "engulfing_body_ratio", "pin_wick_body_ratio", "delayed_false_break_bars",
+        "close_deviation_pct", "xaut_close_deviation_pct",
+    }
+    for key, value in parameters.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(f"invalid crypto alert parameter: {key}")
+        if key in positive and float(value) <= 0:
+            raise ValueError(f"crypto alert parameter must be positive: {key}")
+        if key == "pin_other_wick_body_max" and float(value) < 0:
+            raise ValueError("crypto alert parameter cannot be negative: pin_other_wick_body_max")
+    if float(parameters.get("divergence_min_gap", 1)) > float(parameters.get("divergence_max_gap", 1)):
+        raise ValueError("divergence_min_gap cannot exceed divergence_max_gap")

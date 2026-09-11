@@ -60,7 +60,8 @@ def replay_crypto_history(root: Path, config: CryptoAlertConfig) -> None:
             continue
         window = history.tail(config.replay_bars)
         state, events = evaluate_crypto_signals(symbol, window, config)
-        historical_events = [replace(event, historical_backfill=True) for event in events]
+        source = str(window.iloc[-1].get("source", "cache"))
+        historical_events = [replace(event, historical_backfill=True, evidence={**event.evidence, "source": source}) for event in events]
         publish_crypto_result(root, state, historical_events)
         baseline_dates.append(str(window.iloc[-1]["日期"]))
     baseline = {"algorithm_version": config.algorithm_version, "preset_id": config.preset_id,

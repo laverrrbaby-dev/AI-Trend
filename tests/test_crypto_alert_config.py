@@ -50,6 +50,11 @@ class CryptoAlertConfigTests(unittest.TestCase):
             self.assertEqual(active.preset_id, "quiet")
             self.assertEqual(active.enabled_alerts, ("td",))
 
+    def test_non_positive_indicator_period_in_preset_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            with self.assertRaises(ValueError):
+                save_crypto_alert_preset(Path(tempdir), "bad-period", {"parameters": {"sma_period": 0}})
+
 
 if __name__ == "__main__":
     unittest.main()

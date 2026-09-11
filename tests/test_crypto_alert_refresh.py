@@ -18,8 +18,9 @@ from trend_radar.crypto_alert_refresh import (  # noqa: E402
     refresh_crypto_alerts,
 )
 from trend_radar.crypto_alert_store import load_crypto_dashboard, publish_crypto_result  # noqa: E402
+from trend_radar.crypto_alert_config import activate_crypto_alert_preset, save_crypto_alert_preset  # noqa: E402
 from trend_radar.crypto_market_data import CryptoHistoryResult  # noqa: E402
-from trend_radar.crypto_signals import CryptoCurrentState  # noqa: E402
+from trend_radar.crypto_signals import CryptoCurrentState, CryptoEvent  # noqa: E402
 
 
 class CryptoAlertRefreshTests(unittest.TestCase):
@@ -95,6 +96,54 @@ class CryptoAlertRefreshTests(unittest.TestCase):
 
             self.assertEqual(status["status"], "partial")
             self.assertIn("中断", status["message"])
+
+    def test_initial_refresh_replays_only_the_latest_configured_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            dates = pd.date_range("2026-01-01", periods=200, freq="D").strftime("%Y-%m-%d")
+            frame = pd.DataFrame({
+                "日期": dates, "开盘价": [100.0] * 200, "最高价": [101.0] * 200,
+                "最低价": [99.0] * 200, "收盘价": [100.0] * 200, "成交量": [1.0] * 200,
+                "成交额": [100.0] * 200, "is_complete": [True] * 200,
+            })
+            history = CryptoHistoryResult("BTC", "binance", "BTCUSDT", frame)
+
+            def evaluate(symbol, values, config):
+                date = str(values.iloc[0]["日期"])
+                event = CryptoEvent(f"{symbol}-{date}", symbol, "td9", "上涨计数", date, date, "TD9：上涨计数", {}, "v1", "default")
+                return CryptoCurrentState(symbol, "有变化", "震荡/未确认", event.message, date, str(values.iloc[-1]["日期"])), [event]
+
+            with patch("trend_radar.crypto_alert_refresh.fetch_crypto_history", return_value=history), \
+                 patch("trend_radar.crypto_alert_refresh.fetch_latest_backup_candle", return_value={"日期": str(dates[-1]), "收盘价": 100.0}), \
+                 patch("trend_radar.crypto_alert_refresh.calculate_indicators", side_effect=lambda values, config: values), \
+                 patch("trend_radar.crypto_alert_refresh.evaluate_crypto_signals", side_effect=evaluate):
+                refresh_crypto_alerts(root)
+
+            stored_events = load_crypto_dashboard(root)["events"]
+            self.assertEqual({event["candle_date"] for event in stored_events}, {str(dates[-180])})
+            self.assertEqual({event["evidence"]["source"] for event in stored_events}, {"binance"})
+
+    def test_changing_preset_rebaselines_events_instead_of_creating_unread_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            alert_dir = root / "data/crypto/alerts"
+            alert_dir.mkdir(parents=True)
+            (alert_dir / "baseline.json").write_text('{"algorithm_version":"crypto-alerts-v1","preset_id":"default","date":"2026-09-09"}')
+            save_crypto_alert_preset(root, "quiet", {"enabled_alerts": ["td"]})
+            activate_crypto_alert_preset(root, "quiet")
+            frame = pd.DataFrame({"日期": ["2026-09-09"], "开盘价": [100.0], "最高价": [101.0], "最低价": [99.0], "收盘价": [100.0], "成交量": [1.0], "成交额": [100.0], "is_complete": [True]})
+            history = CryptoHistoryResult("BTC", "binance", "BTCUSDT", frame)
+
+            def evaluate(symbol, values, config):
+                event = CryptoEvent(f"{symbol}-quiet", symbol, "td9", "上涨计数", "2026-09-09", "2026-09-09", "TD9：上涨计数", {}, config.algorithm_version, config.preset_id)
+                return CryptoCurrentState(symbol, "有变化", "震荡/未确认", event.message, event.candle_date, event.candle_date), [event]
+
+            with patch("trend_radar.crypto_alert_refresh.fetch_crypto_history", return_value=history), \
+                 patch("trend_radar.crypto_alert_refresh.fetch_latest_backup_candle", return_value={"日期": "2026-09-09", "收盘价": 100.0}), \
+                 patch("trend_radar.crypto_alert_refresh.evaluate_crypto_signals", side_effect=evaluate):
+                refresh_crypto_alerts(root)
+
+            self.assertEqual(load_crypto_dashboard(root)["unread_count"], 0)
 
 
 def _payload(url: str) -> object:

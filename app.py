@@ -717,14 +717,28 @@ def _render_crypto_alert_settings() -> None:
             format_func=lambda key: labels[key],
             key=f"crypto-alert-enabled-{config.preset_id}",
         )
+        parameters: dict[str, float | int] = {}
+        st.caption("高级阈值")
+        for key, value in config.parameters.items():
+            numeric = st.number_input(
+                key,
+                value=float(value),
+                step=1.0 if isinstance(value, int) else 0.1,
+                key=f"crypto-alert-parameter-{config.preset_id}-{key}",
+            )
+            parameters[key] = int(numeric) if isinstance(value, int) else float(numeric)
         name = st.text_input("新预设名称", key="crypto-alert-preset-name")
         if st.button("保存为新预设并启用", key="crypto-alert-save-preset"):
             if not name.strip():
                 st.warning("请填写新预设名称。")
             else:
-                save_crypto_alert_preset(ROOT, name.strip(), {"enabled_alerts": enabled})
-                activate_crypto_alert_preset(ROOT, name.strip())
-                st.success(f"已保存并启用预设：{name.strip()}；下一根完整日线起生效。")
+                try:
+                    save_crypto_alert_preset(ROOT, name.strip(), {"enabled_alerts": enabled, "parameters": parameters})
+                    activate_crypto_alert_preset(ROOT, name.strip())
+                except ValueError as exc:
+                    st.error(f"无法保存预设：{exc}")
+                else:
+                    st.success(f"已保存并启用预设：{name.strip()}；下一根完整日线起生效。")
 
 
 def _crypto_dashboard_table(dashboard: dict[str, Any], changed_only: bool = False) -> pd.DataFrame:
