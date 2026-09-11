@@ -702,9 +702,14 @@ def _render_crypto_alert_dashboard() -> None:
     if status.get("status") == "running":
         st.caption(f"后台检查中：{status.get('completed', 0)}/{status.get('total', 5)}")
     dashboard = load_crypto_dashboard(ROOT)
+    important_column, attention_column = st.columns(2)
+    with important_column:
+        show_important = st.checkbox("显示重要提醒标记", value=True, key="crypto-alert-show-important")
+    with attention_column:
+        show_attention = st.checkbox("显示关注级标记", value=False, key="crypto-alert-show-attention")
     changed_only = st.checkbox("仅看有变化", key="crypto-alert-changed-only")
-    table = _crypto_dashboard_table(dashboard, changed_only=changed_only)
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    table = _crypto_dashboard_table(dashboard, changed_only=changed_only, show_important=show_important, show_attention=show_attention)
+    st.dataframe(_style_crypto_dashboard_table(table), use_container_width=True, hide_index=True)
     if st.button("重新检查", key="crypto-alert-refresh"):
         start_crypto_alert_refresh_once(ROOT, force=True)
     for state in dashboard.get("symbols", []):
@@ -774,15 +779,23 @@ def _render_crypto_alert_settings() -> None:
                     st.success(f"已保存并启用预设：{name.strip()}；下一根完整日线起生效。")
 
 
-def _crypto_dashboard_table(dashboard: dict[str, Any], changed_only: bool = False) -> pd.DataFrame:
+def _crypto_dashboard_table(
+    dashboard: dict[str, Any],
+    changed_only: bool = False,
+    show_important: bool = True,
+    show_attention: bool = False,
+) -> pd.DataFrame:
     fixed = ["BTC", "ETH", "SOL", "XAUT", "BNB"]
     states = {item.get("symbol"): item for item in dashboard.get("symbols", [])}
     rows = []
     for symbol in fixed:
         state = states.get(symbol, {})
+        level = state.get("alert_level", "none")
+        level_visible = (level == "important" and show_important) or (level == "attention" and show_attention)
         rows.append({
             "币种": symbol,
             "当前状态": state.get("status", "待检查"),
+            "提醒级别": {"important": "重要", "attention": "关注"}.get(level, "-") if level_visible else "-",
             "最新变化": state.get("latest_change", "暂无新的策略变化"),
             "变化日期": state.get("latest_change_date", "-"),
             "数据截至": state.get("data_date", "-"),
@@ -792,12 +805,26 @@ def _crypto_dashboard_table(dashboard: dict[str, Any], changed_only: bool = Fals
     return table[table["当前状态"] == "有变化"].reset_index(drop=True) if changed_only else table
 
 
+def _style_crypto_dashboard_table(table: pd.DataFrame) -> pd.io.formats.style.Styler:
+    def row_style(row: pd.Series) -> list[str]:
+        if str(row.get("当前状态") or "") != "有变化":
+            return [""] * len(row)
+        if str(row.get("提醒级别") or "") == "重要":
+            return ["background-color: #ffe0e0"] * len(row)
+        if str(row.get("提醒级别") or "") == "关注":
+            return ["background-color: #fff0d9"] * len(row)
+        return [""] * len(row)
+
+    return table.style.apply(row_style, axis=1)
+
+
 def crypto_unread_event_ids(dashboard: dict[str, Any], symbol: str) -> list[str]:
     return [
         str(event["event_id"])
         for event in dashboard.get("events", [])
         if event.get("symbol") == symbol
         and not event.get("historical_backfill", False)
+        and event.get("is_unread", True)
         and event.get("event_id")
     ]
 

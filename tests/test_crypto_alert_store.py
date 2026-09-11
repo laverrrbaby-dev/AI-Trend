@@ -15,6 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from trend_radar.crypto_alert_store import (  # noqa: E402
     load_crypto_events,
     load_crypto_dashboard,
+    mark_crypto_symbol_read,
     publish_crypto_result,
     replay_crypto_history,
 )
@@ -23,6 +24,33 @@ from trend_radar.crypto_signals import CryptoCurrentState, CryptoEvent  # noqa: 
 
 
 class CryptoAlertStoreTests(unittest.TestCase):
+    def test_marking_symbol_read_clears_fill_level_but_keeps_latest_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            event = CryptoEvent("eth-important", "ETH", "regular_divergence", "普通看跌", "2026-09-11", "2026-09-11", "MACD柱体出现普通看跌背离", {}, "v2", "default", alert_level="important")
+            state = CryptoCurrentState("ETH", "有变化", "震荡/未确认", event.message, event.candle_date, event.candle_date, alert_level="important", algorithm_version="v2", preset_id="default")
+            publish_crypto_result(root, state, [event])
+
+            dashboard = mark_crypto_symbol_read(root, "ETH", [event.event_id])
+
+            eth = next(item for item in dashboard["symbols"] if item["symbol"] == "ETH")
+            self.assertEqual((eth["status"], eth["alert_level"]), ("无新变化", "none"))
+            self.assertEqual(eth["latest_change"], "MACD柱体出现普通看跌背离")
+            self.assertEqual(dashboard["unread_count"], 0)
+
+    def test_new_algorithm_state_hides_stale_unread_events_from_previous_algorithm(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            old = CryptoEvent("old", "BTC", "td9", "上涨计数", "2026-09-10", "2026-09-10", "旧算法事件", {}, "v1", "default")
+            old_state = CryptoCurrentState("BTC", "有变化", "震荡/未确认", old.message, old.candle_date, old.candle_date, alert_level="attention", algorithm_version="v1", preset_id="default")
+            publish_crypto_result(root, old_state, [old])
+            new_state = CryptoCurrentState("BTC", "无新变化", "震荡/未确认", "暂无新的策略变化", None, "2026-09-11", algorithm_version="v2", preset_id="default")
+
+            dashboard = publish_crypto_result(root, new_state, [])
+
+            self.assertEqual(dashboard["events"], [])
+            self.assertEqual(dashboard["unread_count"], 0)
+
     def test_events_are_append_only_and_duplicate_keys_are_deduplicated(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

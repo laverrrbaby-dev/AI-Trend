@@ -66,10 +66,10 @@ def calculate_indicators(frame: pd.DataFrame, config: CryptoAlertConfig) -> pd.D
     result["sma120"] = close.rolling(int(params["sma_period"]), min_periods=int(params["sma_period"])).mean()
     result["ema144"] = close.ewm(span=int(params["vegas_fast"]), adjust=False, min_periods=1).mean()
     result["ema169"] = close.ewm(span=int(params["vegas_slow"]), adjust=False, min_periods=1).mean()
-    ema12 = close.ewm(span=12, adjust=False, min_periods=1).mean()
-    ema26 = close.ewm(span=26, adjust=False, min_periods=1).mean()
-    result["macd"] = ema12 - ema26
-    result["macd_signal"] = result["macd"].ewm(span=9, adjust=False, min_periods=1).mean()
+    ema_fast = close.ewm(span=int(params["macd_fast"]), adjust=False, min_periods=1).mean()
+    ema_slow = close.ewm(span=int(params["macd_slow"]), adjust=False, min_periods=1).mean()
+    result["macd"] = ema_fast - ema_slow
+    result["macd_signal"] = result["macd"].ewm(span=int(params["macd_signal"]), adjust=False, min_periods=1).mean()
     result["macd_hist"] = result["macd"] - result["macd_signal"]
     delta = close.diff().fillna(0)
     gains = delta.clip(lower=0)

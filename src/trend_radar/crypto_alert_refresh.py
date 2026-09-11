@@ -12,7 +12,7 @@ from .crypto_alert_config import load_crypto_alert_config
 from .crypto_alert_store import mark_crypto_symbol_review, publish_crypto_result
 from .crypto_indicators import calculate_indicators
 from .crypto_market_data import fetch_crypto_history, fetch_latest_backup_candle, latest_complete_crypto_date
-from .crypto_signals import CryptoCurrentState, evaluate_crypto_signals
+from .crypto_signals import CryptoCurrentState, CryptoEvent, evaluate_crypto_signals
 
 _LOCK = threading.Lock()
 _ACTIVE: threading.Thread | None = None
@@ -36,6 +36,7 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
         _write_status(root, status)
         return CryptoAlertRefreshResult("skipped", 0, len(config.symbols))
     historical_replay = _baseline_requires_replay(baseline_path, config.algorithm_version, config.preset_id)
+    previous_date = _baseline_date(baseline_path) if not historical_replay else None
     completed_dates: list[str] = []
     statuses: dict[str, Any] = {"status": "running", "started_at": datetime.now(UTC).isoformat(), "completed": 0, "total": len(config.symbols), "symbols": {}}
     _write_status(root, statuses)
@@ -53,7 +54,13 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
             frame = calculate_indicators(replay_window, config)
             state, events = evaluate_crypto_signals(symbol, frame, config)
             sourced_events = [replace(event, evidence={**event.evidence, "source": history.source}) for event in events]
-            publish_crypto_result(root, state, [replace(event, historical_backfill=True) for event in sourced_events] if historical_replay else sourced_events)
+            publishable = (
+                [replace(event, historical_backfill=True) for event in sourced_events]
+                if historical_replay
+                else [event for event in sourced_events if previous_date is None or event.candle_date > previous_date]
+            )
+            visible_events = [] if historical_replay else publishable
+            publish_crypto_result(root, _state_for_events(state, visible_events, config.algorithm_version, config.preset_id), publishable)
             if state.data_date:
                 completed_dates.append(state.data_date)
             statuses["symbols"][symbol] = {"phase": "succeeded", "data_date": state.data_date}
@@ -65,7 +72,7 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
         statuses["completed"] = completed
         _write_status(root, statuses)
     statuses.update({"status": "succeeded" if not warnings else "partial", "finished_at": datetime.now(UTC).isoformat(), "warnings": warnings})
-    if historical_replay and completed_dates:
+    if not warnings and len(completed_dates) == len(config.symbols):
         _write_baseline(baseline_path, config.algorithm_version, config.preset_id, max(completed_dates))
     _write_status(root, statuses)
     return CryptoAlertRefreshResult(statuses["status"], completed, len(config.symbols), tuple(warnings))
@@ -133,6 +140,39 @@ def _baseline_requires_replay(path: Path, algorithm_version: str, preset_id: str
     except json.JSONDecodeError:
         return True
     return baseline.get("algorithm_version") != algorithm_version or baseline.get("preset_id") != preset_id
+
+
+def _baseline_date(path: Path) -> str | None:
+    try:
+        return str(json.loads(path.read_text(encoding="utf-8")).get("date") or "") or None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _state_for_events(state: CryptoCurrentState, events: list[CryptoEvent], algorithm_version: str, preset_id: str) -> CryptoCurrentState:
+    if not events:
+        return replace(
+            state,
+            status="无新变化",
+            latest_change="暂无新的策略变化",
+            latest_change_date=None,
+            alert_level="none",
+            algorithm_version=algorithm_version,
+            preset_id=preset_id,
+        )
+    latest_date = max(event.confirmed_date for event in events)
+    latest_events = [event for event in events if event.confirmed_date == latest_date]
+    latest = max(latest_events, key=lambda event: {"attention": 1, "important": 2}.get(event.alert_level, 0))
+    messages = "；".join(dict.fromkeys(event.message for event in latest_events))
+    return replace(
+        state,
+        status="有变化",
+        latest_change=messages,
+        latest_change_date=latest.confirmed_date,
+        alert_level=latest.alert_level,
+        algorithm_version=algorithm_version,
+        preset_id=preset_id,
+    )
 
 
 def _backup_agrees(symbol: str, primary, backup: dict[str, Any] | None, config) -> bool:

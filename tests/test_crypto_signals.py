@@ -16,6 +16,134 @@ from trend_radar.crypto_signals import evaluate_crypto_signals  # noqa: E402
 
 
 class CryptoTrendSignalTests(unittest.TestCase):
+    def test_macd_regular_divergence_alerts_on_the_new_extreme_close_without_waiting_three_bars(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("divergence",))
+        frame = _frame([100.0] * 13)
+        frame["td_up"] = 0
+        frame["swing_high_3"] = False
+        frame["swing_low_3"] = False
+        frame.loc[5, ["swing_high_3", "最高价"]] = [True, 110.0]
+        frame.loc[12, "最高价"] = 120.0
+        frame["macd_hist"] = 0.0
+        frame.loc[5, "macd_hist"] = 5.0
+        frame.loc[11, "macd_hist"] = 3.0
+        frame.loc[12, "macd_hist"] = 2.0
+
+        _, events = evaluate_crypto_signals("XAUT", frame, config)
+
+        event = next(event for event in events if event.evidence.get("indicator") == "macd_hist")
+        self.assertEqual((event.event_type, event.direction), ("regular_divergence", "普通看跌"))
+        self.assertEqual(event.candle_date, "2026-01-13")
+        self.assertEqual(event.alert_level, "important")
+
+    def test_macd_hidden_divergence_is_attention_level(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("divergence",))
+        frame = _frame([100.0] * 13)
+        frame["td_up"] = 0
+        frame["swing_low_3"] = False
+        frame["swing_high_3"] = False
+        frame.loc[5, ["swing_low_3", "最低价"]] = [True, 90.0]
+        frame.loc[12, "最低价"] = 95.0
+        frame.loc[6:11, "最低价"] = 98.0
+        frame["macd_hist"] = 0.0
+        frame.loc[5, "macd_hist"] = -2.0
+        frame.loc[11, "macd_hist"] = -5.0
+        frame.loc[12, "macd_hist"] = -4.0
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        event = next(event for event in events if event.evidence.get("indicator") == "macd_hist")
+        self.assertEqual((event.event_type, event.direction, event.alert_level), ("hidden_divergence", "隐藏看涨", "attention"))
+
+    def test_hidden_macd_divergence_upgrades_when_same_day_breakout_confirms_direction(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("divergence", "price_action"))
+        frame = _frame([100.0] * 13)
+        frame["td_up"] = 0
+        frame["swing_low_3"] = False
+        frame["swing_high_3"] = False
+        frame.loc[4, ["swing_high_3", "最高价"]] = [True, 105.0]
+        frame.loc[5, ["swing_low_3", "最低价"]] = [True, 90.0]
+        frame.loc[6:11, "最低价"] = 98.0
+        frame.loc[12, ["最低价", "最高价", "收盘价"]] = [95.0, 112.0, 110.0]
+        frame["macd_hist"] = 0.0
+        frame.loc[5, "macd_hist"] = -2.0
+        frame.loc[11, "macd_hist"] = -5.0
+        frame.loc[12, "macd_hist"] = -4.0
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        hidden = next(event for event in events if event.event_type == "hidden_divergence" and event.evidence.get("indicator") == "macd_hist")
+        self.assertEqual(hidden.alert_level, "important")
+
+    def test_quality_breakout_of_confirmed_main_level_is_important_without_volume_expansion(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([100.0] * 10)
+        frame["td_up"] = 0
+        frame["swing_high_3"] = False
+        frame["swing_low_3"] = False
+        frame["swing_high_5"] = False
+        frame["swing_low_5"] = False
+        frame.loc[2, ["swing_high_5", "最高价"]] = [True, 110.0]
+        frame.loc[8, ["开盘价", "最高价", "最低价", "收盘价", "atr14", "成交量"]] = [100.0, 113.0, 99.0, 112.0, 10.0, 100.0]
+
+        _, events = evaluate_crypto_signals("BNB", frame, config)
+
+        event = next(event for event in events if event.event_type == "breakout")
+        self.assertEqual(event.alert_level, "important")
+        self.assertEqual(event.evidence["level_scope"], "main")
+
+    def test_td_and_plain_level_reaction_are_attention_level(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("td", "price_action"))
+        frame = _frame([10, 10, 10, 10] + list(range(11, 23)))
+        frame = calculate_indicators(frame, config)
+        frame["swing_low_3"] = False
+        frame.loc[2, ["swing_low_3", "最低价"]] = [True, 8.0]
+        frame.loc[10, ["最低价", "收盘价"]] = [7.5, 9.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        attention_types = {event.event_type for event in events if event.alert_level == "attention"}
+        self.assertIn("td9", attention_types)
+        self.assertIn("level_reaction", attention_types)
+
+    def test_main_level_rejection_without_a_strong_close_stays_attention(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([80.0] * 18)
+        frame["td_up"] = 0
+        frame["swing_high_3"] = False
+        frame["swing_low_3"] = False
+        frame["swing_high_5"] = False
+        frame["swing_low_5"] = False
+        frame.loc[[1, 7], "swing_high_5"] = True
+        frame.loc[[2, 8], "swing_low_5"] = True
+        frame.loc[1, "最高价"], frame.loc[7, "最高价"] = 90.0, 100.0
+        frame.loc[2, "最低价"], frame.loc[8, "最低价"] = 60.0, 70.0
+        frame.loc[17, ["开盘价", "最高价", "最低价", "收盘价", "atr14"]] = [75.0, 90.0, 69.0, 78.0, 10.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        event = next(event for event in events if event.event_type == "same_day_rejection" and event.candle_date == "2026-01-18")
+        self.assertEqual(event.alert_level, "attention")
+
+    def test_price_action_severity_does_not_use_future_dow_pivots(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([80.0] * 20)
+        frame["td_up"] = 0
+        frame["swing_high_3"] = False
+        frame["swing_low_3"] = False
+        frame["swing_high_5"] = False
+        frame["swing_low_5"] = False
+        frame.loc[[5, 12], "swing_high_5"] = True
+        frame.loc[[6, 13], "swing_low_5"] = True
+        frame.loc[5, "最高价"], frame.loc[12, "最高价"] = 90.0, 100.0
+        frame.loc[6, "最低价"], frame.loc[13, "最低价"] = 60.0, 70.0
+        frame.loc[11, ["开盘价", "最高价", "最低价", "收盘价", "atr14"]] = [65.0, 82.0, 59.0, 80.0, 10.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        event = next(event for event in events if event.event_type == "same_day_rejection" and event.candle_date == "2026-01-12")
+        self.assertEqual(event.alert_level, "attention")
+
     def test_td_emits_only_first_9_and_13_in_same_continuous_run(self) -> None:
         close = [10, 10, 10, 10] + list(range(11, 26)) + [20, 19]
         frame = _frame(close)
@@ -47,10 +175,12 @@ class CryptoTrendSignalTests(unittest.TestCase):
         frame["swing_low_3"] = False
         frame.loc[[5, 12], "swing_low_3"] = True
         frame.loc[5, ["最低价", "macd_hist", "rsi14", "obv"]] = [90.0, -4.0, 25.0, 100.0]
+        frame.loc[11, "macd_hist"] = -3.0
         frame.loc[12, ["最低价", "macd_hist", "rsi14", "obv"]] = [80.0, -2.0, 35.0, 200.0]
         _, events = evaluate_crypto_signals("BTC", frame, config)
         self.assertEqual({event.direction for event in events}, {"普通看涨"})
-        self.assertEqual({event.confirmed_date for event in events}, {"2026-01-16"})
+        dates_by_indicator = {event.evidence["indicator"]: event.confirmed_date for event in events}
+        self.assertEqual(dates_by_indicator, {"macd_hist": "2026-01-13", "rsi14": "2026-01-16", "obv": "2026-01-16"})
 
     def test_dow_event_uses_latest_pivot_confirmation_date(self) -> None:
         config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("dow",))

@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from app import (  # noqa: E402
     _crypto_candlestick_chart,
     _crypto_dashboard_table,
+    _style_crypto_dashboard_table,
     crypto_history_source_caption,
     crypto_unread_event_ids,
     go,
@@ -36,7 +37,7 @@ class CryptoDashboardTableTests(unittest.TestCase):
     def test_table_always_contains_fixed_five_in_order(self) -> None:
         table = _crypto_dashboard_table({"symbols": [{"symbol": "ETH", "status": "有变化", "latest_change": "TD9：上涨计数"}]})
         self.assertEqual(table["币种"].tolist(), ["BTC", "ETH", "SOL", "XAUT", "BNB"])
-        self.assertEqual(list(table.columns), ["币种", "当前状态", "最新变化", "变化日期", "数据截至", "数据质量"])
+        self.assertEqual(list(table.columns), ["币种", "当前状态", "提醒级别", "最新变化", "变化日期", "数据截至", "数据质量"])
         self.assertNotIn("买入", " ".join(table["最新变化"].tolist()))
 
     def test_table_can_show_only_symbols_with_changes(self) -> None:
@@ -48,6 +49,32 @@ class CryptoDashboardTableTests(unittest.TestCase):
         table = _crypto_dashboard_table(dashboard, changed_only=True)
 
         self.assertEqual(table["币种"].tolist(), ["BTC"])
+
+    def test_crypto_rows_use_red_for_important_and_orange_for_attention(self) -> None:
+        table = _crypto_dashboard_table({"symbols": [
+            {"symbol": "BTC", "status": "有变化", "alert_level": "important", "latest_change": "MACD普通看跌背离"},
+            {"symbol": "ETH", "status": "有变化", "alert_level": "attention", "latest_change": "TD9：上涨计数"},
+            {"symbol": "SOL", "status": "无新变化", "alert_level": "none", "latest_change": "暂无新的策略变化"},
+        ]}, show_attention=True)
+
+        styles = _style_crypto_dashboard_table(table)._compute().ctx
+
+        self.assertTrue(all(("background-color", "#ffe0e0") in styles[(0, column)] for column in range(len(table.columns))))
+        self.assertTrue(all(("background-color", "#fff0d9") in styles[(1, column)] for column in range(len(table.columns))))
+        self.assertFalse(any(styles.get((2, column), []) for column in range(len(table.columns))))
+
+    def test_attention_fill_and_label_are_hidden_by_default_but_important_remains_visible(self) -> None:
+        table = _crypto_dashboard_table({"symbols": [
+            {"symbol": "BTC", "status": "有变化", "alert_level": "important"},
+            {"symbol": "ETH", "status": "有变化", "alert_level": "attention"},
+        ]})
+
+        styles = _style_crypto_dashboard_table(table)._compute().ctx
+
+        self.assertEqual(table.loc[0, "提醒级别"], "重要")
+        self.assertEqual(table.loc[1, "提醒级别"], "-")
+        self.assertTrue(any(("background-color", "#ffe0e0") in styles.get((0, column), []) for column in range(len(table.columns))))
+        self.assertFalse(any(styles.get((1, column), []) for column in range(len(table.columns))))
 
     def test_detail_chart_includes_candles_and_default_trend_overlays(self) -> None:
         if not hasattr(go.Figure(), "add_trace"):
