@@ -8,7 +8,8 @@
       table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; }
       th { background: #f7f7f8; font-weight: 600; text-align: left; padding: 9px 10px; border-bottom: 1px solid #d9d9de; white-space: nowrap; }
       td { padding: 9px 10px; border-bottom: 1px solid #ececf0; white-space: nowrap; }
-      tr.strong td { background: #ffe0e0; }
+      tr.anomaly-强异动 td { background: #ffe0e0; }
+      tr.anomaly-关注 td { background: #fff8d8; }
       td.code { cursor: copy; font-weight: 600; }
       td.expandable { cursor: pointer; }
       .detail-row td { background: #fffafa; white-space: normal; vertical-align: top; }
@@ -67,12 +68,23 @@
         rows.forEach((row) => {
           const code = row["代码"] || "";
           const strong = strongCodes.has(code);
+          const displayLevel = row["_anomaly_display"] || "";
           const tr = document.createElement("tr");
-          if (strong) tr.className = "strong";
+          if (displayLevel) tr.className = `anomaly-${displayLevel}`;
 
           columns.forEach((column) => {
             const cell = document.createElement("td");
             cell.textContent = row[column] || "";
+            if (column === "名称" && displayLevel) {
+              const badge = document.createElement("span");
+              badge.className = "anomaly-badge";
+              badge.textContent = displayLevel;
+              badge.style.cssText = displayLevel === "强异动"
+                ? "background:#d93025;color:#fff"
+                : "background:#f9ab00;color:#3c2f00";
+              badge.style.cssText += ";margin-left:6px;padding:2px 5px;border-radius:4px;font-size:12px;font-weight:600";
+              cell.appendChild(badge);
+            }
             if (column === "代码") {
               cell.className = "code";
               cell.title = "双击复制代码";

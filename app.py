@@ -460,7 +460,18 @@ def _render_us_stock_turnover_page() -> None:
         st.warning("暂无可展示的美股成交额缓存，正在尝试拉取最新数据。")
         return
 
+    _, strong_toggle, attention_toggle = st.columns([3.0, 1.0, 1.0], vertical_alignment="center")
+    with strong_toggle:
+        show_strong_anomalies = st.toggle("显示强异动", value=True, key="us-stock-show-strong")
+    with attention_toggle:
+        show_attention_anomalies = st.toggle("显示关注级", value=False, key="us-stock-show-attention")
+
     display_table = _display_us_stock_table(snapshot)
+    anomaly_levels = {
+        str(row["代码"]): str(row.get("异动等级") or "")
+        for _, row in snapshot.iterrows()
+        if str(row.get("代码") or "")
+    }
     expanded_key = f"us-stock-expanded-{display_date}"
     expanded_code = str(st.session_state.get(expanded_key) or "")
     details_html = ""
@@ -477,7 +488,12 @@ def _render_us_stock_turnover_page() -> None:
         else:
             expanded_code = ""
     interaction = US_STOCK_TABLE_COMPONENT(
-        rows=_build_us_stock_component_rows(display_table),
+        rows=_build_us_stock_component_rows(
+            display_table,
+            anomaly_levels,
+            show_strong=show_strong_anomalies,
+            show_attention=show_attention_anomalies,
+        ),
         strong_codes=snapshot.loc[snapshot["异动等级"].astype(str) == "强异动", "代码"].astype(str).tolist()
         if "异动等级" in snapshot.columns
         else [],
@@ -504,11 +520,27 @@ def _render_us_stock_turnover_page() -> None:
             st.rerun()
 
 
-def _build_us_stock_component_rows(table: pd.DataFrame) -> list[dict[str, str]]:
-    return [
-        {column: "" if pd.isna(value) else str(value) for column, value in row.items()}
-        for row in table.to_dict(orient="records")
-    ]
+def _build_us_stock_component_rows(
+    table: pd.DataFrame,
+    anomaly_levels: dict[str, str] | None = None,
+    *,
+    show_strong: bool = True,
+    show_attention: bool = False,
+) -> list[dict[str, str]]:
+    levels = anomaly_levels or {}
+    rows: list[dict[str, str]] = []
+    for row in table.to_dict(orient="records"):
+        component_row = {column: "" if pd.isna(value) else str(value) for column, value in row.items()}
+        level = levels.get(component_row.get("代码", ""), "")
+        if level == "强异动" and show_strong:
+            display_level = level
+        elif level == "关注" and show_attention:
+            display_level = level
+        else:
+            display_level = ""
+        component_row["_anomaly_display"] = display_level
+        rows.append(component_row)
+    return rows
 
 
 def _resolve_us_stock_interaction(

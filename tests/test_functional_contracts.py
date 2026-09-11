@@ -324,6 +324,33 @@ class FunctionalContractsTests(unittest.TestCase):
         self.assertEqual(app._resolve_us_stock_interaction({"type": "toggle", "code": "LITE"}, "LITE", snapshot), "")
         self.assertEqual(app._resolve_us_stock_interaction({"type": "toggle", "code": "NVDA"}, "", snapshot), "")
 
+    def test_us_stock_component_rows_expose_only_enabled_anomaly_decoration(self) -> None:
+        table = pd.DataFrame(
+            [
+                {"序号": 1, "代码": "STRONG", "名称": "强异动", "涨跌幅": "+8.00%"},
+                {"序号": 2, "代码": "WATCH", "名称": "关注级", "涨跌幅": "+4.00%"},
+                {"序号": 3, "代码": "NONE", "名称": "无异动", "涨跌幅": "+1.00%"},
+            ]
+        )
+        levels = {"STRONG": "强异动", "WATCH": "关注", "NONE": "无异动"}
+
+        defaults = app._build_us_stock_component_rows(table, levels)
+        self.assertEqual([row["_anomaly_display"] for row in defaults], ["强异动", "", ""])
+
+        both = app._build_us_stock_component_rows(table, levels, show_strong=True, show_attention=True)
+        self.assertEqual([row["_anomaly_display"] for row in both], ["强异动", "关注", ""])
+
+        attention_only = app._build_us_stock_component_rows(table, levels, show_strong=False, show_attention=True)
+        self.assertEqual([row["_anomaly_display"] for row in attention_only], ["", "关注", ""])
+
+    def test_us_stock_component_renders_anomaly_badges_and_row_classes(self) -> None:
+        component = (PROJECT_ROOT / "src/trend_radar/components/us_stock_table/index.html").read_text(encoding="utf-8")
+
+        self.assertIn('tr.className = `anomaly-${displayLevel}`', component)
+        self.assertIn('badge.textContent = displayLevel', component)
+        self.assertIn('cell.appendChild(badge)', component)
+        self.assertIn('row["_anomaly_display"]', component)
+
     def test_us_stock_component_exposes_copy_and_expand_events(self) -> None:
         component = (PROJECT_ROOT / "src/trend_radar/components/us_stock_table/index.html").read_text(encoding="utf-8")
 
