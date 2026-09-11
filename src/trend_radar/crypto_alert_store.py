@@ -35,6 +35,10 @@ def publish_crypto_result(root: Path, state: CryptoCurrentState, events: list[Cr
         states.sort(key=lambda item: ["BTC", "ETH", "SOL", "XAUT", "BNB"].index(item["symbol"]) if item["symbol"] in {"BTC", "ETH", "SOL", "XAUT", "BNB"} else 99)
         dashboard = {"generated_at": _now_iso(), "unread_count": unread, "symbols": states, "events": all_events}
         _atomic_json(directory / "dashboard.json", dashboard)
+        if state.data_date:
+            snapshot_path = directory / "snapshots" / f"{state.data_date}.json"
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_json(snapshot_path, dashboard)
         return dashboard
 
 

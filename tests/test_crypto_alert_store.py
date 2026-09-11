@@ -43,6 +43,18 @@ class CryptoAlertStoreTests(unittest.TestCase):
             dashboard = publish_crypto_result(root, state, [event])
             self.assertEqual(dashboard["unread_count"], 0)
 
+    def test_publish_writes_an_auditable_snapshot_for_the_state_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            event = CryptoEvent("snapshot", "BTC", "td9", "上涨计数", "2026-09-09", "2026-09-09", "TD9：上涨计数", {}, "v1", "default")
+            state = CryptoCurrentState("BTC", "有变化", "震荡/未确认", event.message, event.candle_date, "2026-09-09")
+
+            publish_crypto_result(root, state, [event])
+
+            snapshot = json.loads((root / "data/crypto/alerts/snapshots/2026-09-09.json").read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["symbols"][0]["symbol"], "BTC")
+            self.assertEqual(snapshot["events"][0]["event_id"], "snapshot")
+
     def test_initial_replay_persists_baseline_and_historical_events(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

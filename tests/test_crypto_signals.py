@@ -69,6 +69,22 @@ class CryptoTrendSignalTests(unittest.TestCase):
         self.assertIn("ma120_touch", [event.event_type for event in events])
         self.assertIn("vegas_touch", [event.event_type for event in events])
 
+    def test_ma120_and_vegas_retest_exit_require_a_prior_touch_then_move_away(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("ma120", "vegas"))
+        frame = _frame([104.0, 101.0, 106.0])
+        frame["td_up"] = 0
+        frame["sma120"] = [100.0, 100.0, 100.0]
+        frame["ema144"] = [100.0, 100.0, 100.0]
+        frame["ema169"] = [100.0, 100.0, 100.0]
+        frame["atr14"] = [4.0, 4.0, 4.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        self.assertEqual(
+            {(event.event_type, event.candle_date) for event in events if event.event_type.endswith("retest_exit")},
+            {("ma120_retest_exit", "2026-01-03"), ("vegas_retest_exit", "2026-01-03")},
+        )
+
     def test_price_breakout_requires_a_confirmed_short_pivot_level(self) -> None:
         config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
         frame = _frame([100.0] * 10)
@@ -99,6 +115,18 @@ class CryptoTrendSignalTests(unittest.TestCase):
         frame.loc[6, ["最高价", "收盘价"]] = [115.0, 108.0]
         _, events = evaluate_crypto_signals("BTC", frame, config)
         self.assertIn("same_day_rejection", [event.event_type for event in events])
+
+    def test_touching_a_confirmed_support_then_closing_back_above_is_level_reaction(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([100.0] * 10)
+        frame["td_up"] = 0
+        frame["swing_low_3"] = False
+        frame.loc[2, ["swing_low_3", "最低价"]] = [True, 90.0]
+        frame.loc[6, ["最低价", "收盘价"]] = [89.0, 95.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        self.assertIn("level_reaction", [event.event_type for event in events])
 
 
 def _frame(close: list[float]) -> pd.DataFrame:

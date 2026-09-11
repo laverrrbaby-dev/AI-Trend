@@ -81,6 +81,9 @@ def _add_ma_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, 
         if pd.notna(ma.iloc[index]) and pd.notna(frame.iloc[index].get("atr14")):
             if abs(close.iloc[index] - ma.iloc[index]) <= float(config.parameters["touch_atr"]) * float(frame.iloc[index]["atr14"]):
                 _append_event(events, symbol, "ma120_touch", "触及MA120", frame, index, config, "价格接近MA120")
+            direction = _retest_exit_direction(close.iloc[index - 1], ma.iloc[index - 1], close.iloc[index], ma.iloc[index], frame.iloc[index]["atr14"], config)
+            if direction:
+                _append_event(events, symbol, "ma120_retest_exit", direction, frame, index, config, f"回踩MA120后{direction}")
 
 
 def _add_vegas_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:
@@ -96,6 +99,11 @@ def _add_vegas_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFram
             distance = min(abs(close.iloc[index] - upper.iloc[index]), abs(close.iloc[index] - lower.iloc[index]))
             if distance <= float(config.parameters["touch_atr"]) * float(frame.iloc[index]["atr14"]):
                 _append_event(events, symbol, "vegas_touch", "触及通道", frame, index, config, "价格接近Vegas通道")
+            previous_level = _nearest_level(close.iloc[index - 1], lower.iloc[index - 1], upper.iloc[index - 1])
+            current_level = _nearest_level(close.iloc[index], lower.iloc[index], upper.iloc[index])
+            direction = _retest_exit_direction(close.iloc[index - 1], previous_level, close.iloc[index], current_level, frame.iloc[index]["atr14"], config)
+            if direction:
+                _append_event(events, symbol, "vegas_retest_exit", direction, frame, index, config, f"回踩Vegas通道后{direction}")
 
 
 def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:
@@ -114,6 +122,8 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
                 _append_event(events, symbol, "breakout", "向上", frame, index, config, "收盘突破已确认关键高点")
             if high > level and close <= level:
                 _append_event(events, symbol, "same_day_rejection", "上方拒绝", frame, index, config, "日内越过关键高点后收盘回落")
+            if previous_close <= level and high >= level and close < level:
+                _append_event(events, symbol, "level_reaction", "阻力回落", frame, index, config, "触及已确认阻力位后回落")
             lookback = int(config.parameters["delayed_false_break_bars"])
             if close <= level and any(float(frame.iloc[position]["收盘价"]) > level for position in range(max(0, index - lookback), index)):
                 _append_event(events, symbol, "delayed_false_break", "向上回落", frame, index, config, "突破后回到关键高点内")
@@ -123,6 +133,8 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
                 _append_event(events, symbol, "breakout", "向下", frame, index, config, "收盘跌破已确认关键低点")
             if low < level and close >= level:
                 _append_event(events, symbol, "same_day_rejection", "下方拒绝", frame, index, config, "日内跌破关键低点后收盘回升")
+            if previous_close >= level and low <= level and close > level:
+                _append_event(events, symbol, "level_reaction", "支撑回升", frame, index, config, "触及已确认支撑位后回升")
             lookback = int(config.parameters["delayed_false_break_bars"])
             if close >= level and any(float(frame.iloc[position]["收盘价"]) < level for position in range(max(0, index - lookback), index)):
                 _append_event(events, symbol, "delayed_false_break", "向下回升", frame, index, config, "跌破后回到关键低点内")
@@ -172,6 +184,19 @@ def _indicator_at_pivot(series: pd.Series, index: int, radius: int, is_low: bool
     if window.empty:
         return float("nan")
     return float(window.min() if is_low else window.max())
+
+
+def _nearest_level(price: float, lower: float, upper: float) -> float:
+    return float(lower if abs(price - lower) <= abs(price - upper) else upper)
+
+
+def _retest_exit_direction(previous_close: float, previous_level: float, close: float, level: float, atr: float, config: CryptoAlertConfig) -> str | None:
+    threshold = float(config.parameters["touch_atr"]) * float(atr)
+    previous_delta = float(previous_close) - float(previous_level)
+    current_delta = float(close) - float(level)
+    if abs(previous_delta) > threshold or abs(current_delta) <= threshold or previous_delta * current_delta <= 0:
+        return None
+    return "向上离开" if current_delta > 0 else "向下离开"
 
 
 def _classify_trend(frame: pd.DataFrame) -> str:

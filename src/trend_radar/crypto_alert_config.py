@@ -53,6 +53,10 @@ def _preset_path(root: Path, preset_id: str) -> Path:
     return root / "data" / "crypto" / "alerts" / "presets" / f"{preset_id}.json"
 
 
+def _active_preset_path(root: Path) -> Path:
+    return root / "data" / "crypto" / "alerts" / "config.json"
+
+
 def _parse(payload: dict[str, Any], preset_id: str) -> CryptoAlertConfig:
     symbols = tuple(str(item).upper() for item in payload.get("symbols", CRYPTO_ALERT_SYMBOLS))
     if symbols != CRYPTO_ALERT_SYMBOLS:
@@ -100,7 +104,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def load_crypto_alert_config(root: Path = PROJECT_ROOT, preset_id: str | None = None) -> CryptoAlertConfig:
-    selected = preset_id or "default"
+    selected = preset_id or _load_active_preset_id(root)
     payload = _default_payload(root) if selected == "default" else _read_json(_preset_path(root, selected))
     return _parse(payload, selected)
 
@@ -116,7 +120,30 @@ def save_crypto_alert_preset(root: Path, preset_id: str, payload: dict[str, Any]
     return config
 
 
+def activate_crypto_alert_preset(root: Path, preset_id: str) -> CryptoAlertConfig:
+    if preset_id != "default" and not _PRESET_RE.fullmatch(preset_id):
+        raise ValueError("invalid preset id")
+    config = load_crypto_alert_config(root, preset_id)
+    path = _active_preset_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"active_preset": preset_id}, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+    return config
+
+
 def list_crypto_alert_presets(root: Path = PROJECT_ROOT) -> tuple[str, ...]:
     directory = root / "data" / "crypto" / "alerts" / "presets"
     names = [path.stem for path in directory.glob("*.json")] if directory.exists() else []
     return tuple(sorted({"default", *names}))
+
+
+def _load_active_preset_id(root: Path) -> str:
+    path = _active_preset_path(root)
+    if not path.exists():
+        return "default"
+    payload = _read_json(path)
+    preset_id = str(payload.get("active_preset", ""))
+    if preset_id != "default" and not _PRESET_RE.fullmatch(preset_id):
+        raise ValueError("invalid active crypto alert preset")
+    return preset_id

@@ -80,7 +80,10 @@ from trend_radar.crypto_alert_refresh import (  # noqa: E402
     read_crypto_alert_refresh_status,
     start_crypto_alert_refresh_once,
 )
-from trend_radar.crypto_alert_store import load_crypto_dashboard  # noqa: E402
+from trend_radar.crypto_alert_store import (  # noqa: E402
+    load_crypto_dashboard,
+    mark_crypto_symbol_read,
+)
 from trend_radar.crypto_alert_config import load_crypto_alert_config  # noqa: E402
 from trend_radar.crypto_indicators import calculate_indicators  # noqa: E402
 from trend_radar.crypto_market_data import load_crypto_history  # noqa: E402
@@ -647,6 +650,7 @@ def _start_crypto_refresh_thread(force: bool) -> None:
 
 def _render_crypto_turnover_page() -> None:
     _render_crypto_alert_dashboard()
+    _render_legacy_crypto_turnover()
 
 
 def _render_crypto_alert_dashboard() -> None:
@@ -659,20 +663,28 @@ def _render_crypto_alert_dashboard() -> None:
     if status.get("status") == "running":
         st.caption(f"后台检查中：{status.get('completed', 0)}/{status.get('total', 5)}")
     dashboard = load_crypto_dashboard(ROOT)
-    table = _crypto_dashboard_table(dashboard)
+    changed_only = st.checkbox("仅看有变化", key="crypto-alert-changed-only")
+    table = _crypto_dashboard_table(dashboard, changed_only=changed_only)
     st.dataframe(table, use_container_width=True, hide_index=True)
     if st.button("重新检查", key="crypto-alert-refresh"):
         start_crypto_alert_refresh_once(ROOT, force=True)
     for state in dashboard.get("symbols", []):
-        with st.expander(f"{state.get('symbol', '')} · {state.get('trend', '震荡/未确认')}"):
+        if changed_only and state.get("status") != "有变化":
+            continue
+        symbol = str(state.get("symbol", ""))
+        with st.expander(f"{symbol} · {state.get('trend', '震荡/未确认')}"):
             st.write(state.get("latest_change", "暂无新的策略变化"))
             st.caption(f"数据截至 {state.get('data_date', '-')} · {state.get('quality', '正常')}")
-            history = load_crypto_history(ROOT, str(state.get("symbol")))
+            unread_event_ids = crypto_unread_event_ids(dashboard, symbol)
+            if unread_event_ids and st.button("标记该币种已读", key=f"crypto-alert-read-{symbol}"):
+                mark_crypto_symbol_read(ROOT, symbol, unread_event_ids)
+                st.success("该币种的新提醒已标记为已读。")
+            history = load_crypto_history(ROOT, symbol)
             if not history.empty:
                 st.plotly_chart(_crypto_candlestick_chart(calculate_indicators(history, load_crypto_alert_config(ROOT)), state), use_container_width=True)
 
 
-def _crypto_dashboard_table(dashboard: dict[str, Any]) -> pd.DataFrame:
+def _crypto_dashboard_table(dashboard: dict[str, Any], changed_only: bool = False) -> pd.DataFrame:
     fixed = ["BTC", "ETH", "SOL", "XAUT", "BNB"]
     states = {item.get("symbol"): item for item in dashboard.get("symbols", [])}
     rows = []
@@ -686,7 +698,18 @@ def _crypto_dashboard_table(dashboard: dict[str, Any]) -> pd.DataFrame:
             "数据截至": state.get("data_date", "-"),
             "数据质量": state.get("quality", "待检查"),
         })
-    return pd.DataFrame(rows)
+    table = pd.DataFrame(rows)
+    return table[table["当前状态"] == "有变化"].reset_index(drop=True) if changed_only else table
+
+
+def crypto_unread_event_ids(dashboard: dict[str, Any], symbol: str) -> list[str]:
+    return [
+        str(event["event_id"])
+        for event in dashboard.get("events", [])
+        if event.get("symbol") == symbol
+        and not event.get("historical_backfill", False)
+        and event.get("event_id")
+    ]
 
 
 def _crypto_candlestick_chart(history: pd.DataFrame, state: dict[str, Any] | None = None, overlays: dict[str, bool] | None = None) -> go.Figure:
@@ -704,6 +727,9 @@ def _crypto_candlestick_chart(history: pd.DataFrame, state: dict[str, Any] | Non
                 figure.add_trace(go.Scatter(x=history["日期"], y=history[column], name=name, mode="lines"))
     figure.update_layout(height=520, xaxis_rangeslider_visible=False, margin={"l": 20, "r": 20, "t": 30, "b": 20})
     return figure
+
+
+def _render_legacy_crypto_turnover() -> None:
     target_date = resolve_crypto_target_date()
     refresh_started = _start_crypto_auto_refresh_once(target_date)
     available_dates = get_available_crypto_dates()
