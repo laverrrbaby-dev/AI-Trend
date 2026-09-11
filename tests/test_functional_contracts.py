@@ -390,6 +390,16 @@ class FunctionalContractsTests(unittest.TestCase):
         self.assertEqual(table.iloc[0]["30日成交额"], "123.4亿 USD等值")
         self.assertEqual(table.iloc[0]["日均成交额"], "4.11亿 USD等值")
 
+    def test_crypto_display_table_excludes_symbols_outside_fixed_alert_universe(self) -> None:
+        frame = pd.DataFrame([
+            {"币种": "XRP", "30日成交额": 30.0, "日均成交额": 1.0, "交易所数": 1, "交易对数": 1, "最大来源": "Binance", "最大来源占比": 100.0, "来源明细": "Binance 100%"},
+            {"币种": "BTC", "30日成交额": 20.0, "日均成交额": 1.0, "交易所数": 1, "交易对数": 1, "最大来源": "Binance", "最大来源占比": 100.0, "来源明细": "Binance 100%"},
+        ])
+
+        table = app._display_crypto_table(frame)
+
+        self.assertEqual(table["币种"].tolist(), ["BTC"])
+
     def test_crypto_table_columns_use_requested_formatting(self) -> None:
         columns = app._crypto_table_columns()
 

@@ -86,6 +86,20 @@ class CryptoMarketDataTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 fetch_crypto_history("BTC", load_crypto_alert_config(PROJECT_ROOT), Path(tempdir), now=NOW, fetch_json=fetch)
 
+    def test_primary_failure_uses_configured_backup_and_records_the_switch(self) -> None:
+        def fetch(url: str, headers: dict[str, str]) -> object:
+            del headers
+            if url.startswith(BINANCE_KLINES_URL):
+                raise RuntimeError("binance unavailable")
+            self.assertTrue(url.startswith(OKX_HISTORY_CANDLES_URL))
+            return {"code": "0", "data": [_okx_row("2026-09-09", 100.0)]}
+
+        result = fetch_crypto_history("BTC", load_crypto_alert_config(PROJECT_ROOT), Path(tempfile.mkdtemp()), now=NOW, fetch_json=fetch)
+
+        self.assertEqual(result.source, "okx")
+        self.assertTrue(result.used_fallback)
+        self.assertEqual(result.frame["日期"].tolist(), ["2026-09-09"])
+
 
 def _binance_row(day: str, close: float, complete: bool, low: float | None = None) -> list[object]:
     local_day = datetime.fromisoformat(f"{day}T00:00:00+00:00")
@@ -94,6 +108,11 @@ def _binance_row(day: str, close: float, complete: bool, low: float | None = Non
     if not complete:
         close_time = int(NOW.timestamp() * 1000) + 10_000
     return [start, str(close - 1), str(close + 2), str(low if low is not None else close - 2), str(close), "100", close_time, "10000", 10, "50", "5000", "0"]
+
+
+def _okx_row(day: str, close: float) -> list[str]:
+    start = int(datetime.fromisoformat(f"{day}T00:00:00+00:00").timestamp() * 1000)
+    return [str(start), str(close - 1), str(close + 2), str(close - 2), str(close), "100", "10000", "10000", "1"]
 
 
 if __name__ == "__main__":

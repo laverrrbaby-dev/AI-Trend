@@ -145,6 +145,19 @@ class CryptoAlertRefreshTests(unittest.TestCase):
 
             self.assertEqual(load_crypto_dashboard(root)["unread_count"], 0)
 
+    def test_fallback_source_marks_symbol_for_review_without_publishing_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            frame = pd.DataFrame({"日期": ["2026-09-09"], "开盘价": [100.0], "最高价": [101.0], "最低价": [99.0], "收盘价": [100.0], "成交量": [1.0], "成交额": [100.0], "is_complete": [True]})
+            history = CryptoHistoryResult("BTC", "okx", "BTC-USDT", frame, used_fallback=True)
+            with patch("trend_radar.crypto_alert_refresh.fetch_crypto_history", return_value=history), \
+                 patch("trend_radar.crypto_alert_refresh.fetch_latest_backup_candle", return_value={"日期": "2026-09-09", "收盘价": 100.0}):
+                refresh_crypto_alerts(root)
+
+            dashboard = load_crypto_dashboard(root)
+            self.assertEqual(dashboard["unread_count"], 0)
+            self.assertTrue(all(state["quality"] == "待复核" for state in dashboard["symbols"]))
+
 
 def _payload(url: str) -> object:
     if "history-candles" in url:

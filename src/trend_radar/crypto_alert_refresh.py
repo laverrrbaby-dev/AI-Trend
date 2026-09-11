@@ -44,6 +44,8 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
     for symbol in config.symbols:
         try:
             history = fetch_crypto_history(symbol, config, root, now=now, fetch_json=fetch_json)
+            if history.used_fallback:
+                raise ValueError(f"primary source unavailable; using {history.source} fallback requires review")
             backup = fetch_latest_backup_candle(symbol, config, now=now, fetch_json=fetch_json)
             if not _backup_agrees(symbol, history.frame, backup, config):
                 raise ValueError("primary and backup close prices require review")

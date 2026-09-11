@@ -35,6 +35,7 @@ class CryptoHistoryResult:
     pair: str
     frame: pd.DataFrame
     in_progress: dict[str, Any] | None = None
+    used_fallback: bool = False
 
 
 def latest_complete_crypto_date(now: datetime | None = None) -> str:
@@ -51,22 +52,24 @@ def fetch_crypto_history(
 ) -> CryptoHistoryResult:
     spec = config.sources[symbol]
     fetcher = fetch_json or _fetch_json
-    if spec.primary == "binance":
-        rows = _fetch_binance(fetcher, spec.pair, config.history_bars)
-        source = "binance"
-    elif spec.primary == "okx":
-        rows = _fetch_okx(fetcher, spec.pair, config.history_bars)
-        source = "okx"
-    else:
-        raise ValueError(f"unsupported primary crypto source: {spec.primary}")
+    used_fallback = False
+    try:
+        rows = _fetch_history_rows(fetcher, spec.primary, spec.pair, config.history_bars)
+        source = spec.primary
+        pair = spec.pair
+    except Exception:
+        rows = _fetch_history_rows(fetcher, spec.backup, spec.backup_pair, config.history_bars)
+        source = spec.backup
+        pair = spec.backup_pair
+        used_fallback = True
 
     current = (now or datetime.now(UTC)).astimezone(UTC)
-    frame, in_progress = _normalize_rows(rows, source, spec.pair, current)
+    frame, in_progress = _normalize_rows(rows, source, pair, current)
     if frame.empty:
         raise ValueError(f"no complete {symbol} crypto candles returned")
     _validate_frame(frame)
     _write_cache(root, symbol, frame)
-    return CryptoHistoryResult(symbol=symbol, source=source, pair=spec.pair, frame=frame, in_progress=in_progress)
+    return CryptoHistoryResult(symbol=symbol, source=source, pair=pair, frame=frame, in_progress=in_progress, used_fallback=used_fallback)
 
 
 def load_crypto_history(root: Path, symbol: str) -> pd.DataFrame:
@@ -121,6 +124,14 @@ def _fetch_okx(fetcher: JsonFetcher, pair: str, limit: int) -> list[Any]:
         after = str(page[-1][0])
         remaining -= len(page)
     return rows
+
+
+def _fetch_history_rows(fetcher: JsonFetcher, source: str, pair: str, limit: int) -> list[Any]:
+    if source == "binance":
+        return _fetch_binance(fetcher, pair, limit)
+    if source == "okx":
+        return _fetch_okx(fetcher, pair, limit)
+    raise ValueError(f"unsupported crypto source: {source}")
 
 
 def _normalize_rows(rows: list[Any], source: str, pair: str, now_utc: datetime) -> tuple[pd.DataFrame, dict[str, Any] | None]:

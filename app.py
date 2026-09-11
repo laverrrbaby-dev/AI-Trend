@@ -85,6 +85,7 @@ from trend_radar.crypto_alert_store import (  # noqa: E402
     mark_crypto_symbol_read,
 )
 from trend_radar.crypto_alert_config import (  # noqa: E402
+    CRYPTO_ALERT_SYMBOLS,
     activate_crypto_alert_preset,
     list_crypto_alert_presets,
     load_crypto_alert_config,
@@ -802,7 +803,7 @@ def _render_legacy_crypto_turnover() -> None:
 
     header_left, header_date, header_status = st.columns([1.45, 0.58, 0.92], vertical_alignment="center")
     with header_left:
-        st.title(f"加密货币{CRYPTO_WINDOW_DAYS}日成交额Top{CRYPTO_TOP_TURNOVER_LIMIT}")
+        st.title(f"固定五币近{CRYPTO_WINDOW_DAYS}日成交额参考")
         st.caption(_crypto_source_caption(metadata))
     with header_date:
         display_date = st.selectbox("数据日期", date_options, index=default_index, key=CRYPTO_DATE_SELECT_KEY)
@@ -1759,7 +1760,7 @@ def _display_crypto_table(df: pd.DataFrame) -> pd.DataFrame:
     columns = ["排名", *value_columns]
     if df.empty:
         return pd.DataFrame(columns=columns)
-    source = df.copy()
+    source = df[df["币种"].isin(CRYPTO_ALERT_SYMBOLS)].copy()
     for column in ["30日成交额", "日均成交额", "最大来源占比", "交易所数", "交易对数"]:
         source[column] = pd.to_numeric(source.get(column), errors="coerce")
     source = source.sort_values("30日成交额", ascending=False).reset_index(drop=True)
