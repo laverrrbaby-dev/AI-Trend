@@ -83,7 +83,17 @@ def crypto_alert_refresh_is_active() -> bool:
 
 def read_crypto_alert_refresh_status(root: Path = PROJECT_ROOT) -> dict[str, Any]:
     path = root / "data" / "crypto" / "alerts" / "refresh_status.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"status": "idle", "completed": 0, "total": 5}
+    if not path.exists():
+        return {"status": "idle", "completed": 0, "total": 5}
+    status = json.loads(path.read_text(encoding="utf-8"))
+    if status.get("status") == "running" and not crypto_alert_refresh_is_active():
+        status.update({
+            "status": "partial",
+            "finished_at": datetime.now(UTC).isoformat(),
+            "message": "上一次后台检查已中断；请重新检查以补齐未完成币种",
+        })
+        _write_status(root, status)
+    return status
 
 
 def _write_status(root: Path, status: dict[str, Any]) -> None:

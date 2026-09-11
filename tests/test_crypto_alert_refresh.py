@@ -84,6 +84,18 @@ class CryptoAlertRefreshTests(unittest.TestCase):
                 forced = refresh_crypto_alerts(root, force=True, now=now)
             self.assertEqual(forced.status, "partial")
 
+    def test_stale_persisted_running_status_is_recovered_after_process_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            alert_dir = root / "data/crypto/alerts"
+            alert_dir.mkdir(parents=True)
+            (alert_dir / "refresh_status.json").write_text('{"status":"running","completed":2,"total":5}')
+
+            status = read_crypto_alert_refresh_status(root)
+
+            self.assertEqual(status["status"], "partial")
+            self.assertIn("中断", status["message"])
+
 
 def _payload(url: str) -> object:
     if "history-candles" in url:

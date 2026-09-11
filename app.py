@@ -84,7 +84,12 @@ from trend_radar.crypto_alert_store import (  # noqa: E402
     load_crypto_dashboard,
     mark_crypto_symbol_read,
 )
-from trend_radar.crypto_alert_config import load_crypto_alert_config  # noqa: E402
+from trend_radar.crypto_alert_config import (  # noqa: E402
+    activate_crypto_alert_preset,
+    list_crypto_alert_presets,
+    load_crypto_alert_config,
+    save_crypto_alert_preset,
+)
 from trend_radar.crypto_indicators import calculate_indicators  # noqa: E402
 from trend_radar.crypto_market_data import load_crypto_history  # noqa: E402
 
@@ -660,6 +665,7 @@ def _render_crypto_alert_dashboard() -> None:
         st.info(notice)
     st.title("币圈现货关注提醒")
     st.caption("日线 · UTC+8 · 仅提示策略变化，不构成交易指令")
+    _render_crypto_alert_settings()
     if status.get("status") == "running":
         st.caption(f"后台检查中：{status.get('completed', 0)}/{status.get('total', 5)}")
     dashboard = load_crypto_dashboard(ROOT)
@@ -681,7 +687,44 @@ def _render_crypto_alert_dashboard() -> None:
                 st.success("该币种的新提醒已标记为已读。")
             history = load_crypto_history(ROOT, symbol)
             if not history.empty:
-                st.plotly_chart(_crypto_candlestick_chart(calculate_indicators(history, load_crypto_alert_config(ROOT)), state), use_container_width=True)
+                overlays = {
+                    "sma120": st.checkbox("显示 MA120", value=True, key=f"crypto-alert-ma120-{symbol}"),
+                    "vegas": st.checkbox("显示 Vegas 通道", value=True, key=f"crypto-alert-vegas-{symbol}"),
+                }
+                st.plotly_chart(_crypto_candlestick_chart(calculate_indicators(history, load_crypto_alert_config(ROOT)), state, overlays), use_container_width=True)
+
+
+def _render_crypto_alert_settings() -> None:
+    labels = {
+        "dow": "道氏结构",
+        "price_action": "价格行为",
+        "divergence": "背离",
+        "td": "TD9 / TD13",
+        "ma120": "MA120",
+        "vegas": "Vegas 通道",
+    }
+    config = load_crypto_alert_config(ROOT)
+    with st.expander("提醒设置", expanded=False):
+        presets = list_crypto_alert_presets(ROOT)
+        selected = st.selectbox("策略预设", presets, index=presets.index(config.preset_id))
+        if selected != config.preset_id and st.button("切换预设", key="crypto-alert-activate-preset"):
+            activate_crypto_alert_preset(ROOT, selected)
+            st.success(f"已切换为预设：{selected}；下一根完整日线起生效。")
+        enabled = st.multiselect(
+            "启用的提醒类型",
+            options=list(labels),
+            default=list(config.enabled_alerts),
+            format_func=lambda key: labels[key],
+            key=f"crypto-alert-enabled-{config.preset_id}",
+        )
+        name = st.text_input("新预设名称", key="crypto-alert-preset-name")
+        if st.button("保存为新预设并启用", key="crypto-alert-save-preset"):
+            if not name.strip():
+                st.warning("请填写新预设名称。")
+            else:
+                save_crypto_alert_preset(ROOT, name.strip(), {"enabled_alerts": enabled})
+                activate_crypto_alert_preset(ROOT, name.strip())
+                st.success(f"已保存并启用预设：{name.strip()}；下一根完整日线起生效。")
 
 
 def _crypto_dashboard_table(dashboard: dict[str, Any], changed_only: bool = False) -> pd.DataFrame:
