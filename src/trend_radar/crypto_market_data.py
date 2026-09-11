@@ -68,7 +68,7 @@ def fetch_crypto_history(
     if frame.empty:
         raise ValueError(f"no complete {symbol} crypto candles returned")
     _validate_frame(frame)
-    _write_cache(root, symbol, frame)
+    _write_cache(root, symbol, frame, in_progress)
     return CryptoHistoryResult(symbol=symbol, source=source, pair=pair, frame=frame, in_progress=in_progress, used_fallback=used_fallback)
 
 
@@ -201,11 +201,12 @@ def _validate_frame(frame: pd.DataFrame) -> None:
         raise ValueError("crypto candle volume cannot be negative")
 
 
-def _write_cache(root: Path, symbol: str, frame: pd.DataFrame) -> None:
+def _write_cache(root: Path, symbol: str, frame: pd.DataFrame, in_progress: dict[str, Any] | None = None) -> None:
     path = root / "data" / "crypto" / "alerts" / "history" / f"{symbol}.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
+    cached = pd.concat([frame, pd.DataFrame([in_progress])] if in_progress else [frame], ignore_index=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
-        frame.to_csv(handle, index=False)
+        cached.to_csv(handle, index=False)
         temp_path = Path(handle.name)
     temp_path.replace(path)
 

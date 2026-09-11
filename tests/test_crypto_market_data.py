@@ -15,6 +15,7 @@ from trend_radar.crypto_market_data import (  # noqa: E402
     BINANCE_KLINES_URL,
     OKX_HISTORY_CANDLES_URL,
     fetch_crypto_history,
+    load_crypto_history,
 )
 
 
@@ -38,11 +39,14 @@ class CryptoMarketDataTests(unittest.TestCase):
                 _binance_row("2026-09-10", 120.0, complete=False),
             ]
 
-        result = fetch_crypto_history("BTC", load_crypto_alert_config(PROJECT_ROOT), Path(tempfile.mkdtemp()), now=NOW, fetch_json=fetch)
+        root = Path(tempfile.mkdtemp())
+        result = fetch_crypto_history("BTC", load_crypto_alert_config(PROJECT_ROOT), root, now=NOW, fetch_json=fetch)
         self.assertEqual(result.frame["日期"].tolist(), ["2026-09-08", "2026-09-09"])
         self.assertTrue(result.frame["is_complete"].all())
         self.assertEqual(result.in_progress["日期"], "2026-09-10")
         self.assertEqual(result.frame["收盘价"].tolist(), [100.0, 110.0])
+        cached = load_crypto_history(root, "BTC")
+        self.assertEqual(cached["is_complete"].tolist(), [True, True, False])
         self.assertEqual(seen[0].split("?")[0], BINANCE_KLINES_URL)
 
     def test_xaut_uses_okx_utc8_daily_candles_and_confirm_flag(self) -> None:

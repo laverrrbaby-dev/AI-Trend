@@ -52,6 +52,15 @@ class CryptoDashboardTableTests(unittest.TestCase):
         }))
         self.assertEqual([trace.name for trace in chart.data], ["日线", "SMA120", "EMA144", "EMA169"])
 
+    def test_detail_chart_labels_the_unfinished_utc8_candle(self) -> None:
+        if not hasattr(go.Figure(), "add_trace"):
+            self.skipTest("Plotly import stub is active in this test process")
+        chart = _crypto_candlestick_chart(pd.DataFrame({
+            "日期": ["2026-09-09", "2026-09-10"], "开盘价": [100, 105], "最高价": [110, 111],
+            "最低价": [90, 100], "收盘价": [105, 106], "is_complete": [True, False],
+        }))
+        self.assertIn("形成中日线", [trace.name for trace in chart.data])
+
 
 if __name__ == "__main__":
     unittest.main()

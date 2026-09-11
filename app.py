@@ -776,7 +776,12 @@ def _crypto_candlestick_chart(history: pd.DataFrame, state: dict[str, Any] | Non
     figure = go.Figure()
     if history.empty or not hasattr(figure, "add_trace"):
         return figure
-    figure.add_trace(go.Candlestick(x=history["日期"], open=history["开盘价"], high=history["最高价"], low=history["最低价"], close=history["收盘价"], name="日线"))
+    complete = history[history["is_complete"]] if "is_complete" in history else history
+    forming = history[~history["is_complete"]] if "is_complete" in history else history.iloc[0:0]
+    if not complete.empty:
+        figure.add_trace(go.Candlestick(x=complete["日期"], open=complete["开盘价"], high=complete["最高价"], low=complete["最低价"], close=complete["收盘价"], name="日线"))
+    if not forming.empty:
+        figure.add_trace(go.Candlestick(x=forming["日期"], open=forming["开盘价"], high=forming["最高价"], low=forming["最低价"], close=forming["收盘价"], name="形成中日线", opacity=0.45))
     if overlays.get("sma120") and "sma120" in history:
         figure.add_trace(go.Scatter(x=history["日期"], y=history["sma120"], name="SMA120", mode="lines"))
     if overlays.get("vegas"):
