@@ -6,6 +6,7 @@ import unittest
 import urllib.parse
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -23,6 +24,24 @@ NOW = datetime(2026, 9, 10, 12, tzinfo=UTC)
 
 
 class CryptoMarketDataTests(unittest.TestCase):
+    def test_http_fetch_uses_macos_system_proxy_when_environment_is_unset(self) -> None:
+        response = type("Response", (), {"raise_for_status": lambda self: None, "json": lambda self: {"ok": True}})()
+        proxy_output = "HTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 7890\n"
+        with patch.dict("os.environ", {}, clear=True), patch("trend_radar.crypto_market_data.platform.system", return_value="Darwin"), patch(
+            "trend_radar.crypto_market_data.subprocess.run"
+        ) as run, patch("trend_radar.crypto_market_data.requests.get", return_value=response) as get:
+            run.return_value.stdout = proxy_output
+            from trend_radar.crypto_market_data import _fetch_json
+
+            self.assertEqual(_fetch_json("https://example.test/data", {}), {"ok": True})
+
+        get.assert_called_once_with(
+            "https://example.test/data",
+            headers={},
+            timeout=15,
+            proxies={"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},
+        )
+
     def test_binance_request_uses_china_daily_boundary_and_drops_open_candle(self) -> None:
         seen: list[str] = []
 

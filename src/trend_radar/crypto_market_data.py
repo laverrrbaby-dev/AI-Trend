@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import platform
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -217,6 +221,46 @@ def _url(base: str, params: dict[str, str]) -> str:
 
 
 def _fetch_json(url: str, headers: dict[str, str]) -> Any:
-    response = requests.get(url, headers=headers, timeout=15)
+    proxy = _resolve_http_proxy()
+    request_options: dict[str, Any] = {"headers": headers, "timeout": 15}
+    if proxy:
+        request_options["proxies"] = {"http": proxy, "https": proxy}
+    response = requests.get(url, **request_options)
     response.raise_for_status()
     return response.json()
+
+
+def _resolve_http_proxy() -> str | None:
+    """Resolve an explicit proxy first, then the macOS system HTTP proxy."""
+    for name in ("CRYPTO_HTTP_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return _macos_http_proxy()
+
+
+@lru_cache(maxsize=1)
+def _macos_http_proxy() -> str | None:
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["scutil", "--proxy"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    values = {}
+    for line in result.stdout.splitlines():
+        if " : " not in line:
+            continue
+        key, value = line.split(" : ", 1)
+        values[key.strip()] = value.strip()
+    if values.get("HTTPSEnable") == "1" and values.get("HTTPSProxy") and values.get("HTTPSPort"):
+        return f"http://{values['HTTPSProxy']}:{values['HTTPSPort']}"
+    if values.get("HTTPEnable") == "1" and values.get("HTTPProxy") and values.get("HTTPPort"):
+        return f"http://{values['HTTPProxy']}:{values['HTTPPort']}"
+    return None

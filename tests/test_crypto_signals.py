@@ -24,6 +24,15 @@ class CryptoTrendSignalTests(unittest.TestCase):
             ("td9", "上涨计数"), ("td13", "上涨计数")
         ])
 
+    def test_signal_evaluation_handles_a_replay_window_with_original_row_indices(self) -> None:
+        close = [10, 10, 10, 10] + list(range(11, 26)) + [20, 19]
+        frame = _frame(close)
+        frame.index = range(180, 180 + len(frame))
+
+        _, events = evaluate_crypto_signals("BTC", frame, load_crypto_alert_config(PROJECT_ROOT))
+
+        self.assertEqual([event.event_type for event in events if event.event_type.startswith("td")], ["td9", "td13"])
+
     def test_ma120_and_vegas_events_are_neutral_attention_changes(self) -> None:
         close = [100.0] * 130 + [105.0, 90.0, 80.0]
         _, events = evaluate_crypto_signals("BTC", _frame(close), load_crypto_alert_config(PROJECT_ROOT))

@@ -38,6 +38,9 @@ class CryptoCurrentState:
 
 def evaluate_crypto_signals(symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> tuple[CryptoCurrentState, list[CryptoEvent]]:
     values = calculate_indicators(frame, config) if "td_up" not in frame.columns else frame.copy()
+    # Replay windows often retain the source frame's index; all signal rules use
+    # positional indexing, so normalize it once at the public evaluation seam.
+    values = values.reset_index(drop=True)
     events: list[CryptoEvent] = []
     if "td" in config.enabled_alerts:
         _add_td_events(events, symbol, values, config)
