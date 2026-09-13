@@ -176,7 +176,8 @@ def main() -> None:
     _apply_style()
     _install_code_copy_handler()
     _install_lifecycle_heartbeat()
-    _start_crypto_background_work()
+    crypto_refresh_started = _start_crypto_background_work()
+    _render_crypto_alert_completion_poll(force_poll=crypto_refresh_started)
 
     market = _market_selector()
     if market == "美股":
@@ -197,6 +198,28 @@ def _start_crypto_background_work() -> bool:
         return False
 
 
+def _crypto_alert_refresh_completed(previous: str, current: str) -> bool:
+    return previous == "running" and current != "running"
+
+
+def _render_crypto_alert_completion_poll(force_poll: bool = False) -> None:
+    initial_status = str(read_crypto_alert_refresh_status().get("status") or "idle")
+    if not hasattr(st, "fragment") or (not force_poll and initial_status != "running"):
+        return
+    state_key = "crypto_alert_poll_status"
+    st.session_state[state_key] = initial_status
+
+    @st.fragment(run_every="2s")
+    def _completion_poll() -> None:
+        previous = str(st.session_state.get(state_key) or "idle")
+        current = str(read_crypto_alert_refresh_status().get("status") or "idle")
+        st.session_state[state_key] = current
+        if _crypto_alert_refresh_completed(previous, current):
+            st.rerun()
+
+    _completion_poll()
+
+
 def _crypto_market_label(status: dict[str, Any]) -> str:
     if status.get("status") in {"partial", "failed"}:
         return "币圈现货 ⚠待复核"
@@ -204,6 +227,13 @@ def _crypto_market_label(status: dict[str, Any]) -> str:
         return "币圈现货 · 更新中"
     important = int(status.get("important_symbol_count", 0) or 0)
     return f"币圈现货 🔴{important}" if important else "币圈现货"
+
+
+def _crypto_alert_error_message(status: dict[str, Any]) -> str:
+    warnings = [str(item) for item in status.get("warnings", []) if str(item).strip()]
+    if warnings:
+        return "币圈数据拉取失败：\n\n- " + "\n- ".join(warnings)
+    return str(status.get("message") or "币圈数据拉取失败，当前结果需要人工复核。")
 
 
 def _crypto_global_notice(status: dict[str, Any], session_state: MutableMapping[str, Any]) -> str | None:
@@ -703,7 +733,7 @@ def _render_crypto_alert_dashboard() -> None:
     if status.get("status") == "running":
         st.caption(f"后台检查中：{status.get('completed', 0)}/{status.get('total', 5)}")
     elif status.get("status") in {"partial", "failed"}:
-        st.error(status.get("message") or "币圈数据拉取失败，当前结果需要人工复核。")
+        st.error(_crypto_alert_error_message(status))
     dashboard = load_crypto_dashboard(ROOT)
     important_column, attention_column = st.columns(2)
     with important_column:

@@ -59,7 +59,7 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
                 if historical_replay
                 else [event for event in sourced_events if previous_date is None or event.candle_date > previous_date]
             )
-            visible_events = [] if historical_replay else publishable
+            visible_events = [] if historical_replay else [event for event in publishable if event.candle_date == state.data_date]
             publish_crypto_result(root, _state_for_events(state, visible_events, config.algorithm_version, config.preset_id), publishable)
             if state.data_date:
                 completed_dates.append(state.data_date)

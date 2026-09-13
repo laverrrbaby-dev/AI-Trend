@@ -26,6 +26,35 @@ from trend_radar.crypto_signals import CryptoCurrentState, CryptoEvent  # noqa: 
 
 
 class CryptoAlertRefreshTests(unittest.TestCase):
+    def test_catch_up_refresh_does_not_show_an_older_event_as_today(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            alert_dir = root / "data/crypto/alerts"
+            alert_dir.mkdir(parents=True)
+            (alert_dir / "baseline.json").write_text(json.dumps({"algorithm_version": ALGORITHM_VERSION, "preset_id": "default", "date": "2026-09-10"}))
+            frame = pd.DataFrame({
+                "日期": ["2026-09-11", "2026-09-12"], "开盘价": [100.0, 101.0],
+                "最高价": [102.0, 102.0], "最低价": [99.0, 100.0], "收盘价": [101.0, 101.0],
+                "成交量": [1.0, 1.0], "成交额": [101.0, 101.0], "is_complete": [True, True],
+            })
+            history = CryptoHistoryResult("BTC", "binance", "BTCUSDT", frame)
+
+            def evaluate(symbol, values, config):
+                event = CryptoEvent(f"{symbol}-old-red", symbol, "breakout", "向上", "2026-09-11", "2026-09-11", "昨天突破", {}, config.algorithm_version, config.preset_id, alert_level="important")
+                state = CryptoCurrentState(symbol, "有变化", "上升结构", event.message, event.candle_date, "2026-09-12", alert_level="important")
+                return state, [event]
+
+            with patch("trend_radar.crypto_alert_refresh.fetch_crypto_history", return_value=history), \
+                 patch("trend_radar.crypto_alert_refresh.fetch_latest_backup_candle", return_value={"日期": "2026-09-12", "收盘价": 101.0}), \
+                 patch("trend_radar.crypto_alert_refresh.calculate_indicators", side_effect=lambda values, config: values), \
+                 patch("trend_radar.crypto_alert_refresh.evaluate_crypto_signals", side_effect=evaluate):
+                refresh_crypto_alerts(root, now=datetime(2026, 9, 13, 12, tzinfo=UTC))
+
+            dashboard = load_crypto_dashboard(root)
+            self.assertTrue(all(item["status"] == "无新变化" for item in dashboard["symbols"]))
+            self.assertEqual(dashboard["important_symbol_count"], 0)
+            self.assertEqual(len(dashboard["events"]), 5)
+
     def test_same_day_messages_put_important_alerts_before_attention_alerts(self) -> None:
         state = CryptoCurrentState("ETH", "有变化", "上升结构", "", None, "2026-09-12")
         events = [
@@ -63,7 +92,7 @@ class CryptoAlertRefreshTests(unittest.TestCase):
 
             dashboard = load_crypto_dashboard(root)
             self.assertEqual({event["event_id"] for event in dashboard["events"]}, {f"{symbol}-new" for symbol in ("BTC", "ETH", "SOL", "XAUT", "BNB")})
-            self.assertEqual(dashboard["unread_count"], 5)
+            self.assertNotIn("unread_count", dashboard)
             self.assertEqual(json.loads((alert_dir / "baseline.json").read_text())["date"], "2026-09-10")
 
     def test_initial_historical_replay_does_not_mark_symbol_as_changed(self) -> None:
@@ -127,7 +156,7 @@ class CryptoAlertRefreshTests(unittest.TestCase):
                  patch("trend_radar.crypto_alert_refresh.fetch_latest_backup_candle", return_value={"日期": "2026-09-09", "收盘价": 100.0}):
                 refresh_crypto_alerts(root)
             dashboard = load_crypto_dashboard(root)
-            self.assertEqual(dashboard["unread_count"], 0)
+            self.assertEqual(dashboard["important_symbol_count"], 0)
             self.assertTrue((root / "data/crypto/alerts/baseline.json").exists())
 
     def test_completed_baseline_skips_network_unless_forced(self) -> None:
@@ -202,7 +231,7 @@ class CryptoAlertRefreshTests(unittest.TestCase):
                  patch("trend_radar.crypto_alert_refresh.evaluate_crypto_signals", side_effect=evaluate):
                 refresh_crypto_alerts(root)
 
-            self.assertEqual(load_crypto_dashboard(root)["unread_count"], 0)
+            self.assertNotIn("unread_count", load_crypto_dashboard(root))
 
     def test_fallback_source_marks_symbol_for_review_without_publishing_events(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -214,7 +243,7 @@ class CryptoAlertRefreshTests(unittest.TestCase):
                 refresh_crypto_alerts(root)
 
             dashboard = load_crypto_dashboard(root)
-            self.assertEqual(dashboard["unread_count"], 0)
+            self.assertEqual(dashboard["important_symbol_count"], 0)
             self.assertTrue(all(state["quality"] == "待复核" for state in dashboard["symbols"]))
 
 

@@ -143,7 +143,8 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
             evidence = {"level": level, "level_scope": scope}
             if previous_close <= level < close:
                 quality = scope == "main" and _is_quality_breakout(frame, index, True, config)
-                _append_event(events, symbol, "breakout", "向上", frame, index, config, "收盘突破已确认关键高点", "important" if quality else "attention", evidence)
+                level_name = "主要前高" if scope == "main" else "短期前高"
+                _append_event(events, symbol, "breakout", "向上", frame, index, config, f"收盘突破{level_name}", "important" if quality else "attention", evidence)
             if high > level and close <= level:
                 important = scope == "main" and trend == "下降结构" and _is_strong_rejection_close(frame, index, False, config)
                 _append_event(events, symbol, "same_day_rejection", "上方拒绝", frame, index, config, "日内越过关键高点后收盘回落", "important" if important else "attention", evidence)
@@ -157,7 +158,8 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
             evidence = {"level": level, "level_scope": scope}
             if previous_close >= level > close:
                 quality = scope == "main" and _is_quality_breakout(frame, index, False, config)
-                _append_event(events, symbol, "breakout", "向下", frame, index, config, "收盘跌破已确认关键低点", "important" if quality else "attention", evidence)
+                level_name = "主要前低" if scope == "main" else "短期前低"
+                _append_event(events, symbol, "breakout", "向下", frame, index, config, f"收盘跌破{level_name}", "important" if quality else "attention", evidence)
             if low < level and close >= level:
                 important = scope == "main" and trend == "上升结构" and _is_strong_rejection_close(frame, index, True, config)
                 _append_event(events, symbol, "same_day_rejection", "下方拒绝", frame, index, config, "日内跌破关键低点后收盘回升", "important" if important else "attention", evidence)
@@ -222,21 +224,26 @@ def _add_early_macd_divergences(events: list[CryptoEvent], symbol: str, frame: p
         for current in range(1, len(frame)):
             if active is not None:
                 price_after = float(frame.iloc[current][price_column])
+                indicator_after = float(frame.iloc[current]["macd_hist"])
+                if not _macd_divergence_still_valid(
+                    active["event_type"],
+                    is_low,
+                    indicator_after,
+                    active["indicator_before"],
+                ):
+                    evidence = {
+                        "indicator": "macd_hist",
+                        "invalidates_event_id": active["event_id"],
+                        "previous_pivot_date": active["previous_pivot_date"],
+                        "current_extreme_date": str(frame.iloc[current]["日期"]),
+                    }
+                    _append_event(events, symbol, "divergence_invalidated", active["direction"], frame, current, config, "MACD早期背离已失效", "none", evidence)
+                    active = None
+                    continue
                 extends = price_after < active["extreme_price"] if is_low else price_after > active["extreme_price"]
                 if extends:
                     active["extreme_price"] = price_after
                     active["extreme_index"] = current
-                    after = float(frame.iloc[current]["macd_hist"])
-                    if not _macd_divergence_still_valid(active["event_type"], is_low, price_after, active["price_before"], after, active["indicator_before"]):
-                        evidence = {
-                            "indicator": "macd_hist",
-                            "invalidates_event_id": active["event_id"],
-                            "previous_pivot_date": active["previous_pivot_date"],
-                            "current_extreme_date": str(frame.iloc[current]["日期"]),
-                        }
-                        _append_event(events, symbol, "divergence_invalidated", active["direction"], frame, current, config, "MACD早期背离已失效", "none", evidence)
-                        active = None
-                        continue
                 if active is not None and current - int(active["extreme_index"]) < 3:
                     continue
                 active = None
@@ -282,10 +289,12 @@ def _add_early_macd_divergences(events: list[CryptoEvent], symbol: str, frame: p
                 }
 
 
-def _macd_divergence_still_valid(event_type: str, is_low: bool, price_after: float, price_before: float, after: float, before: float) -> bool:
+def _macd_divergence_still_valid(event_type: str, is_low: bool, indicator_after: float, indicator_before: float) -> bool:
+    if pd.isna(indicator_after) or pd.isna(indicator_before):
+        return True
     if event_type == "regular_divergence":
-        return (price_after < price_before and after > before) if is_low else (price_after > price_before and after < before)
-    return (price_after > price_before and after < before) if is_low else (price_after < price_before and after > before)
+        return indicator_after > indicator_before if is_low else indicator_after < indicator_before
+    return indicator_after < indicator_before if is_low else indicator_after > indicator_before
 
 
 def _indicator_at_pivot(series: pd.Series, index: int, radius: int, is_low: bool) -> float:

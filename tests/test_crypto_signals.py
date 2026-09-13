@@ -70,6 +70,27 @@ class CryptoTrendSignalTests(unittest.TestCase):
             ("divergence_invalidated", "2026-01-15"),
         ])
         self.assertEqual(macd_events[-1].alert_level, "none")
+
+    def test_early_macd_divergence_invalidates_when_histogram_recovers_without_a_new_price_extreme(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("divergence",))
+        frame = _frame([100.0] * 14)
+        frame["td_up"] = 0
+        frame["swing_high_3"] = False
+        frame["swing_low_3"] = False
+        frame.loc[5, ["swing_high_3", "最高价"]] = [True, 110.0]
+        frame["macd_hist"] = 0.0
+        frame.loc[5, "macd_hist"] = 5.0
+        frame.loc[11, "macd_hist"] = 3.0
+        frame.loc[12, ["最高价", "macd_hist"]] = [120.0, 2.0]
+        frame.loc[13, ["最高价", "macd_hist"]] = [119.0, 6.0]
+
+        _, events = evaluate_crypto_signals("XAUT", frame, config)
+
+        macd_events = [event for event in events if event.evidence.get("indicator") == "macd_hist"]
+        self.assertEqual([(event.event_type, event.candle_date) for event in macd_events], [
+            ("regular_divergence", "2026-01-13"),
+            ("divergence_invalidated", "2026-01-14"),
+        ])
     def test_macd_regular_divergence_alerts_on_the_new_extreme_close_without_waiting_three_bars(self) -> None:
         config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("divergence",))
         frame = _frame([100.0] * 13)
@@ -145,6 +166,7 @@ class CryptoTrendSignalTests(unittest.TestCase):
         event = next(event for event in events if event.event_type == "breakout")
         self.assertEqual(event.alert_level, "important")
         self.assertEqual(event.evidence["level_scope"], "main")
+        self.assertIn("主要前高", event.message)
 
     def test_td_and_plain_level_reaction_are_attention_level(self) -> None:
         config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("td", "price_action"))
@@ -286,7 +308,21 @@ class CryptoTrendSignalTests(unittest.TestCase):
         frame.loc[2, ["swing_high_3", "最高价"]] = [True, 110.0]
         frame.loc[6, "收盘价"] = 112.0
         _, events = evaluate_crypto_signals("BTC", frame, config)
-        self.assertIn("breakout", [event.event_type for event in events])
+        event = next(event for event in events if event.event_type == "breakout")
+        self.assertIn("短期前高", event.message)
+
+    def test_downside_breakout_names_the_confirmed_short_low(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([100.0] * 10)
+        frame["td_up"] = 0
+        frame["swing_low_3"] = False
+        frame.loc[2, ["swing_low_3", "最低价"]] = [True, 90.0]
+        frame.loc[6, "收盘价"] = 88.0
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        event = next(event for event in events if event.event_type == "breakout" and event.direction == "向下")
+        self.assertIn("短期前低", event.message)
 
     def test_return_inside_level_within_three_bars_is_delayed_false_break(self) -> None:
         config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))

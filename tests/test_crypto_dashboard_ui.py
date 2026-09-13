@@ -9,6 +9,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import app as app_module  # noqa: E402
 from app import (  # noqa: E402
     _crypto_candlestick_chart,
     _crypto_dashboard_table,
@@ -20,6 +21,12 @@ from app import (  # noqa: E402
 
 
 class CryptoDashboardTableTests(unittest.TestCase):
+    def test_background_crypto_completion_requests_a_full_page_refresh(self) -> None:
+        completed = getattr(app_module, "_crypto_alert_refresh_completed", lambda previous, current: False)
+        self.assertTrue(completed("running", "succeeded"))
+        self.assertTrue(completed("running", "partial"))
+        self.assertFalse(completed("succeeded", "succeeded"))
+
     def test_history_source_caption_uses_cached_actual_source_and_pair(self) -> None:
         history = pd.DataFrame({"source": ["okx"], "pair": ["BTC-USDT"]})
 
@@ -31,6 +38,14 @@ class CryptoDashboardTableTests(unittest.TestCase):
 
     def test_market_label_shows_review_instead_of_stale_count_after_failure(self) -> None:
         self.assertEqual(_crypto_market_label({"status": "partial", "important_symbol_count": 2}), "币圈现货 ⚠待复核")
+
+    def test_crypto_failure_message_lists_each_failed_symbol_reason(self) -> None:
+        formatter = getattr(app_module, "_crypto_alert_error_message", lambda status: "")
+
+        message = formatter({"status": "partial", "warnings": ["BTC: connection timed out", "XAUT: backup mismatch"]})
+
+        self.assertIn("BTC: connection timed out", message)
+        self.assertIn("XAUT: backup mismatch", message)
 
     def test_table_always_contains_fixed_five_in_order(self) -> None:
         table = _crypto_dashboard_table({"symbols": [{"symbol": "ETH", "status": "有变化", "latest_change": "TD9：上涨计数"}]})
@@ -95,7 +110,7 @@ class CryptoDashboardTableTests(unittest.TestCase):
         }))
         self.assertEqual([trace.name for trace in chart.data], ["日线", "SMA120", "EMA144", "EMA169"])
 
-    def test_detail_chart_labels_the_unfinished_utc8_candle(self) -> None:
+    def test_detail_chart_labels_the_unfinished_utc_candle(self) -> None:
         if not hasattr(go.Figure(), "add_trace"):
             self.skipTest("Plotly import stub is active in this test process")
         chart = _crypto_candlestick_chart(pd.DataFrame({
