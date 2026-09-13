@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RUNTIME_ROOT="$HOME/Library/Application Support/TrendRadar"
 DOMAINS=("trend.com" "trend.test")
 USER_ID="$(id -u)"
 USER_AGENT="$HOME/Library/LaunchAgents/com.trend-radar.app.plist"
@@ -33,8 +34,21 @@ for domain in "${DOMAINS[@]}"; do
 done
 sudo dscacheutil -flushcache
 
+mkdir -p "$RUNTIME_ROOT"
+rsync -a --delete \
+  --exclude .codex \
+  --exclude .git \
+  --exclude .venv \
+  --exclude __pycache__ \
+  --exclude data \
+  --exclude output \
+  "$ROOT/" "$RUNTIME_ROOT/"
+if [[ -d "$ROOT/data" ]]; then
+  rsync -a "$ROOT/data/" "$RUNTIME_ROOT/data/"
+fi
+
 mkdir -p "$HOME/Library/LaunchAgents"
-sed "s|__PROJECT_ROOT__|$ROOT|g" "$ROOT/config/local/com.trend-radar.app.plist.template" > "$USER_AGENT"
+sed "s|__PROJECT_ROOT__|$RUNTIME_ROOT|g" "$ROOT/config/local/com.trend-radar.app.plist.template" > "$USER_AGENT"
 plutil -lint "$USER_AGENT"
 
 sudo install -d -m 755 /usr/local/etc/trend-radar
@@ -48,3 +62,4 @@ sudo launchctl bootout system "$SYSTEM_AGENT" 2>/dev/null || true
 sudo launchctl bootstrap system "$SYSTEM_AGENT"
 
 echo "Ready: http://trend.com and http://trend.test"
+echo "Runtime copy: $RUNTIME_ROOT"

@@ -25,7 +25,7 @@
 ./scripts/install_local_domain.sh
 ```
 
-安装器会请求管理员密码，用于写入 `/etc/hosts`、监听本机 80 端口，以及注册 Caddy 系统服务。项目本身作为当前用户的服务运行；其日志在 `/tmp/trend-radar-launcher*.log`。
+安装器会请求管理员密码，用于写入 `/etc/hosts`、监听本机 80 端口，以及注册 Caddy 系统服务。项目本身作为当前用户的服务运行；为避开 macOS 对“文稿”目录的后台访问限制，安装器会将可运行副本同步到 `~/Library/Application Support/TrendRadar`。修改项目代码后重新运行安装器即可更新运行副本；数据会随首次安装同步，之后由运行副本持续维护。日志在 `/tmp/trend-radar-launcher*.log`。
 
 传统 Streamlit 运行方式仍然可用：
 
