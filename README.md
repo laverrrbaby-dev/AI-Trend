@@ -19,7 +19,7 @@
 
 ### 本地域名访问（macOS）
 
-运行一次以下安装器，可直接在浏览器访问 `http://trend.test`，无需输入端口。它会安装 Caddy 作为本机 `80 -> 8501` 代理，并用 `launchd` 在登录后启动项目、在意外退出时自动重启：
+运行一次以下安装器，可直接在浏览器访问 `http://trend.com`（或 `http://trend.test`），无需输入端口。它会安装 Caddy 作为本机 `80 -> 8501` 代理，并用 `launchd` 在登录后启动项目、在意外退出时自动重启：
 
 ```bash
 ./scripts/install_local_domain.sh

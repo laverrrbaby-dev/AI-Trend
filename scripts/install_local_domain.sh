@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DOMAIN="trend.test"
+DOMAINS=("trend.com" "trend.test")
 USER_ID="$(id -u)"
 USER_AGENT="$HOME/Library/LaunchAgents/com.trend-radar.app.plist"
 SYSTEM_AGENT="/Library/LaunchDaemons/com.trend-radar.caddy.plist"
@@ -23,12 +23,14 @@ if ! command -v caddy >/dev/null; then
 fi
 CADDY_BIN="$(command -v caddy)"
 
-echo "Administrator access is required to configure $DOMAIN and the local HTTP proxy."
+echo "Administrator access is required to configure ${DOMAINS[*]} and the local HTTP proxy."
 sudo -v
 
-if ! sudo grep -Eq "^[[:space:]]*127\\.0\\.0\\.1[[:space:]]+$DOMAIN([[:space:]]|$)" /etc/hosts; then
-  printf '\n127.0.0.1 %s\n' "$DOMAIN" | sudo tee -a /etc/hosts >/dev/null
-fi
+for domain in "${DOMAINS[@]}"; do
+  if ! sudo grep -Eq "^[[:space:]]*127\\.0\\.0\\.1[[:space:]]+$domain([[:space:]]|$)" /etc/hosts; then
+    printf '\n127.0.0.1 %s\n' "$domain" | sudo tee -a /etc/hosts >/dev/null
+  fi
+done
 sudo dscacheutil -flushcache
 
 mkdir -p "$HOME/Library/LaunchAgents"
@@ -45,4 +47,4 @@ launchctl bootstrap "gui/$USER_ID" "$USER_AGENT"
 sudo launchctl bootout system "$SYSTEM_AGENT" 2>/dev/null || true
 sudo launchctl bootstrap system "$SYSTEM_AGENT"
 
-echo "Ready: http://$DOMAIN"
+echo "Ready: http://trend.com and http://trend.test"
