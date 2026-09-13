@@ -43,8 +43,9 @@ class CryptoHistoryResult:
 
 
 def latest_complete_crypto_date(now: datetime | None = None) -> str:
-    current = (now or datetime.now(UTC)).astimezone(ASIA_SHANGHAI)
-    return (current.date() - timedelta(days=1)).isoformat()
+    # Binance/OKX UTC daily candles close at 08:00 in Asia/Shanghai.
+    current_utc = (now or datetime.now(UTC)).astimezone(UTC)
+    return (current_utc.date() - timedelta(days=1)).isoformat()
 
 
 def fetch_crypto_history(
@@ -104,7 +105,7 @@ def fetch_latest_backup_candle(
 
 
 def _fetch_binance(fetcher: JsonFetcher, pair: str, limit: int) -> list[Any]:
-    url = _url(BINANCE_KLINES_URL, {"symbol": pair, "interval": "1d", "timeZone": "8", "limit": str(limit)})
+    url = _url(BINANCE_KLINES_URL, {"symbol": pair, "interval": "1d", "limit": str(limit)})
     payload = fetcher(url, _HEADERS)
     return payload if isinstance(payload, list) else []
 
@@ -115,7 +116,7 @@ def _fetch_okx(fetcher: JsonFetcher, pair: str, limit: int) -> list[Any]:
     remaining = limit
     while remaining > 0:
         page_limit = min(300, remaining)
-        params = {"instId": pair, "bar": "1D", "limit": str(page_limit)}
+        params = {"instId": pair, "bar": "1Dutc", "limit": str(page_limit)}
         if after:
             params["after"] = after
         payload = fetcher(_url(OKX_HISTORY_CANDLES_URL, params), _HEADERS)

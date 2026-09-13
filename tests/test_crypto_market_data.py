@@ -16,6 +16,7 @@ from trend_radar.crypto_market_data import (  # noqa: E402
     BINANCE_KLINES_URL,
     OKX_HISTORY_CANDLES_URL,
     fetch_crypto_history,
+    latest_complete_crypto_date,
     load_crypto_history,
 )
 
@@ -42,7 +43,14 @@ class CryptoMarketDataTests(unittest.TestCase):
             proxies={"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},
         )
 
-    def test_binance_request_uses_china_daily_boundary_and_drops_open_candle(self) -> None:
+    def test_latest_complete_date_changes_at_0800_china_time(self) -> None:
+        before_close = datetime.fromisoformat("2026-09-13T07:59:59+08:00")
+        after_close = datetime.fromisoformat("2026-09-13T08:00:00+08:00")
+
+        self.assertEqual(latest_complete_crypto_date(before_close), "2026-09-11")
+        self.assertEqual(latest_complete_crypto_date(after_close), "2026-09-12")
+
+    def test_binance_request_uses_utc_daily_boundary_and_drops_open_candle(self) -> None:
         seen: list[str] = []
 
         def fetch(url: str, headers: dict[str, str]) -> object:
@@ -50,7 +58,7 @@ class CryptoMarketDataTests(unittest.TestCase):
             seen.append(url)
             query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
             self.assertEqual(query["interval"], ["1d"])
-            self.assertEqual(query["timeZone"], ["8"])
+            self.assertNotIn("timeZone", query)
             self.assertEqual(query["limit"], ["500"])
             return [
                 _binance_row("2026-09-08", 100.0, complete=True),
@@ -68,15 +76,14 @@ class CryptoMarketDataTests(unittest.TestCase):
         self.assertEqual(cached["is_complete"].tolist(), [True, True, False])
         self.assertEqual(seen[0].split("?")[0], BINANCE_KLINES_URL)
 
-    def test_xaut_uses_okx_utc8_daily_candles_and_confirm_flag(self) -> None:
+    def test_xaut_uses_okx_utc_daily_candles_and_confirm_flag(self) -> None:
         seen: list[str] = []
 
         def fetch(url: str, headers: dict[str, str]) -> object:
             del headers
             seen.append(url)
             query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-            self.assertEqual(query["bar"], ["1D"])
-            self.assertNotIn("1Dutc", url)
+            self.assertEqual(query["bar"], ["1Dutc"])
             return {
                 "code": "0",
                 "data": [
@@ -125,8 +132,7 @@ class CryptoMarketDataTests(unittest.TestCase):
 
 
 def _binance_row(day: str, close: float, complete: bool, low: float | None = None) -> list[object]:
-    local_day = datetime.fromisoformat(f"{day}T00:00:00+00:00")
-    start = int((local_day - timedelta(days=1)).replace(hour=16).timestamp() * 1000)
+    start = int(datetime.fromisoformat(f"{day}T00:00:00+00:00").timestamp() * 1000)
     close_time = start + 86_400_000 - 1
     if not complete:
         close_time = int(NOW.timestamp() * 1000) + 10_000

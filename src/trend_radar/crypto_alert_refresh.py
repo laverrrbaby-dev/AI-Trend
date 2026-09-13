@@ -156,14 +156,17 @@ def _state_for_events(state: CryptoCurrentState, events: list[CryptoEvent], algo
             status="无新变化",
             latest_change="暂无新的策略变化",
             latest_change_date=None,
+            latest_alert_time=None,
             alert_level="none",
             algorithm_version=algorithm_version,
             preset_id=preset_id,
         )
     latest_date = max(event.confirmed_date for event in events)
     latest_events = [event for event in events if event.confirmed_date == latest_date]
-    latest = max(latest_events, key=lambda event: {"attention": 1, "important": 2}.get(event.alert_level, 0))
-    messages = "；".join(dict.fromkeys(event.message for event in latest_events))
+    severity = {"attention": 1, "important": 2}
+    ordered_events = sorted(latest_events, key=lambda event: severity.get(event.alert_level, 0), reverse=True)
+    latest = ordered_events[0]
+    messages = "；".join(dict.fromkeys(event.message for event in ordered_events))
     return replace(
         state,
         status="有变化",
@@ -172,6 +175,7 @@ def _state_for_events(state: CryptoCurrentState, events: list[CryptoEvent], algo
         alert_level=latest.alert_level,
         algorithm_version=algorithm_version,
         preset_id=preset_id,
+        latest_alert_time=latest.alert_time,
     )
 
 

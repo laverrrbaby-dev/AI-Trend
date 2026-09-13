@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import date, timedelta
 from typing import Any
 
 import pandas as pd
@@ -23,6 +24,7 @@ class CryptoEvent:
     preset_id: str
     historical_backfill: bool = False
     alert_level: str = "attention"
+    alert_time: str | None = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,7 @@ class CryptoCurrentState:
     alert_level: str = "none"
     algorithm_version: str = ""
     preset_id: str = ""
+    latest_alert_time: str | None = None
 
 
 def evaluate_crypto_signals(symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> tuple[CryptoCurrentState, list[CryptoEvent]]:
@@ -75,6 +78,7 @@ def evaluate_crypto_signals(symbol: str, frame: pd.DataFrame, config: CryptoAler
         alert_level=latest.alert_level if latest else "none",
         algorithm_version=config.algorithm_version,
         preset_id=config.preset_id,
+        latest_alert_time=latest.alert_time if latest else None,
     ), events
 
 
@@ -167,7 +171,7 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
         previous_body = abs(previous_close - previous_open)
         if body >= float(config.parameters["engulfing_body_ratio"]) * max(previous_body, 1e-12) and ((close > open_price > previous_close > previous_open) or (close < open_price < previous_close < previous_open)):
             direction = "阳线吞没" if close > open_price else "阴线吞没"
-            important = _pattern_at_aligned_main_level(frame, index, close > open_price, trend, config)
+            important = _pattern_at_aligned_reference(frame, index, close > open_price, trend, config)
             _append_event(events, symbol, "engulfing", direction, frame, index, config, f"价格行为变化：{direction}", "important" if important else "attention")
         upper_wick = high - max(open_price, close)
         lower_wick = min(open_price, close) - low
@@ -175,7 +179,7 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
         if body > 0 and max(upper_wick, lower_wick) >= float(config.parameters["pin_wick_body_ratio"]) * body and other <= float(config.parameters["pin_other_wick_body_max"]) * body:
             direction = "下影线" if lower_wick > upper_wick else "上影线"
             bullish = lower_wick > upper_wick
-            important = _pattern_at_aligned_main_level(frame, index, bullish, trend, config)
+            important = _pattern_at_aligned_reference(frame, index, bullish, trend, config)
             _append_event(events, symbol, "pin_bar", direction, frame, index, config, f"价格行为变化：{direction}针形", "important" if important else "attention")
 
 
@@ -214,7 +218,28 @@ def _add_early_macd_divergences(events: list[CryptoEvent], symbol: str, frame: p
         return
     for pivot_column, price_column, is_low in (("swing_low_3", "最低价", True), ("swing_high_3", "最高价", False)):
         pivots = [position for position, value in enumerate(frame.get(pivot_column, pd.Series(False, index=frame.index))) if bool(value)]
+        active: dict[str, Any] | None = None
         for current in range(1, len(frame)):
+            if active is not None:
+                price_after = float(frame.iloc[current][price_column])
+                extends = price_after < active["extreme_price"] if is_low else price_after > active["extreme_price"]
+                if extends:
+                    active["extreme_price"] = price_after
+                    active["extreme_index"] = current
+                    after = float(frame.iloc[current]["macd_hist"])
+                    if not _macd_divergence_still_valid(active["event_type"], is_low, price_after, active["price_before"], after, active["indicator_before"]):
+                        evidence = {
+                            "indicator": "macd_hist",
+                            "invalidates_event_id": active["event_id"],
+                            "previous_pivot_date": active["previous_pivot_date"],
+                            "current_extreme_date": str(frame.iloc[current]["日期"]),
+                        }
+                        _append_event(events, symbol, "divergence_invalidated", active["direction"], frame, current, config, "MACD早期背离已失效", "none", evidence)
+                        active = None
+                        continue
+                if active is not None and current - int(active["extreme_index"]) < 3:
+                    continue
+                active = None
             confirmed = [position for position in pivots if position + 3 <= current and minimum <= current - position <= maximum]
             if not confirmed:
                 continue
@@ -233,14 +258,34 @@ def _add_early_macd_divergences(events: list[CryptoEvent], symbol: str, frame: p
             turned_toward_bullish = after > previous_histogram
             turned_toward_bearish = after < previous_histogram
             evidence = {"indicator": "macd_hist", "previous_pivot_date": str(frame.iloc[previous]["日期"]), "current_extreme_date": str(frame.iloc[current]["日期"]), "indicator_before": before, "indicator_after": after, "early_close_confirmation": True}
+            match: tuple[str, str, str, str] | None = None
             if is_low and price_after < price_before and after > before and turned_toward_bullish:
-                _append_event(events, symbol, "regular_divergence", "普通看涨", frame, current, config, "MACD柱体出现普通看涨背离", "important", evidence)
+                match = ("regular_divergence", "普通看涨", "MACD柱体出现普通看涨背离", "important")
             elif not is_low and price_after > price_before and after < before and turned_toward_bearish:
-                _append_event(events, symbol, "regular_divergence", "普通看跌", frame, current, config, "MACD柱体出现普通看跌背离", "important", evidence)
+                match = ("regular_divergence", "普通看跌", "MACD柱体出现普通看跌背离", "important")
             elif is_low and price_after > price_before and after < before and turned_toward_bullish:
-                _append_event(events, symbol, "hidden_divergence", "隐藏看涨", frame, current, config, "MACD柱体出现隐藏看涨背离", "attention", evidence)
+                match = ("hidden_divergence", "隐藏看涨", "MACD柱体出现隐藏看涨背离", "attention")
             elif not is_low and price_after < price_before and after > before and turned_toward_bearish:
-                _append_event(events, symbol, "hidden_divergence", "隐藏看跌", frame, current, config, "MACD柱体出现隐藏看跌背离", "attention", evidence)
+                match = ("hidden_divergence", "隐藏看跌", "MACD柱体出现隐藏看跌背离", "attention")
+            if match:
+                event_type, direction, message, level = match
+                _append_event(events, symbol, event_type, direction, frame, current, config, message, level, evidence)
+                active = {
+                    "event_id": events[-1].event_id,
+                    "event_type": event_type,
+                    "direction": direction,
+                    "extreme_price": price_after,
+                    "extreme_index": current,
+                    "price_before": price_before,
+                    "indicator_before": before,
+                    "previous_pivot_date": str(frame.iloc[previous]["日期"]),
+                }
+
+
+def _macd_divergence_still_valid(event_type: str, is_low: bool, price_after: float, price_before: float, after: float, before: float) -> bool:
+    if event_type == "regular_divergence":
+        return (price_after < price_before and after > before) if is_low else (price_after > price_before and after < before)
+    return (price_after > price_before and after < before) if is_low else (price_after < price_before and after > before)
 
 
 def _indicator_at_pivot(series: pd.Series, index: int, radius: int, is_low: bool) -> float:
@@ -292,16 +337,18 @@ def _is_strong_rejection_close(frame: pd.DataFrame, index: int, bullish: bool, c
     return close >= high - (high - low) * outer_fraction if bullish else close <= low + (high - low) * outer_fraction
 
 
-def _pattern_at_aligned_main_level(frame: pd.DataFrame, index: int, bullish: bool, trend: str, config: CryptoAlertConfig) -> bool:
+def _pattern_at_aligned_reference(frame: pd.DataFrame, index: int, bullish: bool, trend: str, config: CryptoAlertConfig) -> bool:
     if (bullish and trend != "上升结构") or (not bullish and trend != "下降结构"):
         return False
     side = "low" if bullish else "high"
-    levels = [level for level, scope in _confirmed_levels(frame, index, side, config) if scope == "main"]
-    if not levels:
-        return False
     row = frame.iloc[index]
     price = float(row["最低价"] if bullish else row["最高价"])
     atr = float(row.get("atr14", float("nan")))
+    levels = [level for level, scope in _confirmed_levels(frame, index, side, config) if scope == "main"]
+    if "ma120" in config.enabled_alerts and pd.notna(row.get("sma120")):
+        levels.append(float(row["sma120"]))
+    if "vegas" in config.enabled_alerts:
+        levels.extend(float(row[column]) for column in ("ema144", "ema169") if pd.notna(row.get(column)))
     return bool(pd.notna(atr) and any(abs(price - level) <= float(config.parameters["touch_atr"]) * atr for level in levels))
 
 
@@ -389,4 +436,9 @@ def _append_event(
     event_id = f"{symbol}:{event_type}:{direction}:{date}:{config.algorithm_version}:{config.preset_id}"
     payload = {"close": float(frame.iloc[index]["收盘价"]), **(evidence or {})}
     events.append(CryptoEvent(event_id, symbol, event_type, direction, date, date, message,
-                              payload, config.algorithm_version, config.preset_id, alert_level=alert_level))
+                              payload, config.algorithm_version, config.preset_id, alert_level=alert_level,
+                              alert_time=_alert_time_for_candle(date)))
+
+
+def _alert_time_for_candle(candle_date: str) -> str:
+    return f"{(date.fromisoformat(candle_date) + timedelta(days=1)).isoformat()} 08:00"

@@ -12,9 +12,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from app import (  # noqa: E402
     _crypto_candlestick_chart,
     _crypto_dashboard_table,
+    _crypto_market_label,
     _style_crypto_dashboard_table,
     crypto_history_source_caption,
-    crypto_unread_event_ids,
     go,
 )
 
@@ -25,19 +25,17 @@ class CryptoDashboardTableTests(unittest.TestCase):
 
         self.assertEqual(crypto_history_source_caption(history), "实际行情来源：OKX · BTC-USDT")
 
-    def test_crypto_unread_event_ids_excludes_history_and_other_symbols(self) -> None:
-        dashboard = {"events": [
-            {"event_id": "btc-new", "symbol": "BTC", "historical_backfill": False},
-            {"event_id": "btc-history", "symbol": "BTC", "historical_backfill": True},
-            {"event_id": "eth-new", "symbol": "ETH", "historical_backfill": False},
-        ]}
+    def test_market_label_counts_today_important_symbols_not_events(self) -> None:
+        self.assertEqual(_crypto_market_label({"status": "succeeded", "important_symbol_count": 2}), "币圈现货 🔴2")
+        self.assertEqual(_crypto_market_label({"status": "succeeded", "important_symbol_count": 0}), "币圈现货")
 
-        self.assertEqual(crypto_unread_event_ids(dashboard, "BTC"), ["btc-new"])
+    def test_market_label_shows_review_instead_of_stale_count_after_failure(self) -> None:
+        self.assertEqual(_crypto_market_label({"status": "partial", "important_symbol_count": 2}), "币圈现货 ⚠待复核")
 
     def test_table_always_contains_fixed_five_in_order(self) -> None:
         table = _crypto_dashboard_table({"symbols": [{"symbol": "ETH", "status": "有变化", "latest_change": "TD9：上涨计数"}]})
         self.assertEqual(table["币种"].tolist(), ["BTC", "ETH", "SOL", "XAUT", "BNB"])
-        self.assertEqual(list(table.columns), ["币种", "当前状态", "提醒级别", "最新变化", "变化日期", "数据截至", "数据质量"])
+        self.assertEqual(list(table.columns), ["币种", "当前状态", "提醒级别", "最新变化", "信号K线", "提醒时间", "数据截至", "数据质量"])
         self.assertNotIn("买入", " ".join(table["最新变化"].tolist()))
 
     def test_table_can_show_only_symbols_with_changes(self) -> None:
@@ -75,6 +73,18 @@ class CryptoDashboardTableTests(unittest.TestCase):
         self.assertEqual(table.loc[1, "提醒级别"], "-")
         self.assertTrue(any(("background-color", "#ffe0e0") in styles.get((0, column), []) for column in range(len(table.columns))))
         self.assertFalse(any(styles.get((1, column), []) for column in range(len(table.columns))))
+
+    def test_table_distinguishes_signal_candle_from_next_morning_alert_time(self) -> None:
+        table = _crypto_dashboard_table({"symbols": [{
+            "symbol": "ETH",
+            "status": "有变化",
+            "latest_change_date": "2026-09-12",
+            "latest_alert_time": "2026-09-13 08:00",
+        }]})
+
+        eth = table.loc[table["币种"] == "ETH"].iloc[0]
+        self.assertEqual(eth["信号K线"], "2026-09-12")
+        self.assertEqual(eth["提醒时间"], "2026-09-13 08:00")
 
     def test_detail_chart_includes_candles_and_default_trend_overlays(self) -> None:
         if not hasattr(go.Figure(), "add_trace"):

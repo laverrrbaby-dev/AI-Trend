@@ -12,7 +12,7 @@ from typing import Any
 from .config import PROJECT_ROOT
 
 CRYPTO_ALERT_SYMBOLS = ("BTC", "ETH", "SOL", "XAUT", "BNB")
-ALGORITHM_VERSION = "crypto-alerts-v2"
+ALGORITHM_VERSION = "crypto-alerts-v3"
 _ALERT_NAMES = frozenset({"dow", "price_action", "divergence", "td", "ma120", "vegas"})
 _PRESET_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 

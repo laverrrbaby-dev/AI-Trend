@@ -16,6 +16,60 @@ from trend_radar.crypto_signals import evaluate_crypto_signals  # noqa: E402
 
 
 class CryptoTrendSignalTests(unittest.TestCase):
+    def test_signal_records_the_next_0800_china_alert_time(self) -> None:
+        close = [10, 10, 10, 10] + list(range(11, 20))
+
+        _, events = evaluate_crypto_signals("BTC", _frame(close), load_crypto_alert_config(PROJECT_ROOT))
+
+        td9 = next(event for event in events if event.event_type == "td9")
+        self.assertEqual(td9.candle_date, "2026-01-13")
+        self.assertEqual(td9.alert_time, "2026-01-14 08:00")
+
+    def test_bullish_pin_bar_at_ma120_in_an_uptrend_is_important(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action", "ma120"))
+        frame = _frame([105.0] * 18)
+        frame["td_up"] = 0
+        frame["swing_high_5"] = False
+        frame["swing_low_5"] = False
+        frame["swing_high_3"] = False
+        frame["swing_low_3"] = False
+        frame.loc[[5, 11], "swing_high_5"] = True
+        frame.loc[[6, 12], "swing_low_5"] = True
+        frame.loc[5, "最高价"], frame.loc[11, "最高价"] = 110.0, 120.0
+        frame.loc[6, "最低价"], frame.loc[12, "最低价"] = 90.0, 100.0
+        frame["sma120"] = 104.0
+        frame["ema144"] = 130.0
+        frame["ema169"] = 131.0
+        frame["atr14"] = 4.0
+        frame.loc[17, ["开盘价", "最高价", "最低价", "收盘价"]] = [108.0, 110.5, 103.0, 110.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        pin = next(event for event in events if event.event_type == "pin_bar" and event.candle_date == "2026-01-18")
+        self.assertEqual(pin.alert_level, "important")
+
+    def test_early_macd_divergence_is_not_repeated_and_emits_invalidation(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("divergence",))
+        frame = _frame([100.0] * 15)
+        frame["td_up"] = 0
+        frame["swing_high_3"] = False
+        frame["swing_low_3"] = False
+        frame.loc[5, ["swing_high_3", "最高价"]] = [True, 110.0]
+        frame["macd_hist"] = 0.0
+        frame.loc[5, "macd_hist"] = 5.0
+        frame.loc[11, "macd_hist"] = 3.0
+        frame.loc[12, ["最高价", "macd_hist"]] = [120.0, 2.0]
+        frame.loc[13, ["最高价", "macd_hist"]] = [121.0, 4.0]
+        frame.loc[14, ["最高价", "macd_hist"]] = [122.0, 6.0]
+
+        _, events = evaluate_crypto_signals("XAUT", frame, config)
+
+        macd_events = [event for event in events if event.evidence.get("indicator") == "macd_hist"]
+        self.assertEqual([(event.event_type, event.candle_date) for event in macd_events], [
+            ("regular_divergence", "2026-01-13"),
+            ("divergence_invalidated", "2026-01-15"),
+        ])
+        self.assertEqual(macd_events[-1].alert_level, "none")
     def test_macd_regular_divergence_alerts_on_the_new_extreme_close_without_waiting_three_bars(self) -> None:
         config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("divergence",))
         frame = _frame([100.0] * 13)

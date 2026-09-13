@@ -80,10 +80,7 @@ from trend_radar.crypto_alert_refresh import (  # noqa: E402
     read_crypto_alert_refresh_status,
     start_crypto_alert_refresh_once,
 )
-from trend_radar.crypto_alert_store import (  # noqa: E402
-    load_crypto_dashboard,
-    mark_crypto_symbol_read,
-)
+from trend_radar.crypto_alert_store import load_crypto_dashboard  # noqa: E402
 from trend_radar.crypto_alert_config import (  # noqa: E402
     CRYPTO_ALERT_SYMBOLS,
     activate_crypto_alert_preset,
@@ -201,8 +198,12 @@ def _start_crypto_background_work() -> bool:
 
 
 def _crypto_market_label(status: dict[str, Any]) -> str:
-    unread = int(status.get("unread_count", 0) or 0)
-    return f"币圈现货 · {unread}" if unread else "币圈现货"
+    if status.get("status") in {"partial", "failed"}:
+        return "币圈现货 ⚠待复核"
+    if status.get("status") == "running":
+        return "币圈现货 · 更新中"
+    important = int(status.get("important_symbol_count", 0) or 0)
+    return f"币圈现货 🔴{important}" if important else "币圈现货"
 
 
 def _crypto_global_notice(status: dict[str, Any], session_state: MutableMapping[str, Any]) -> str | None:
@@ -212,14 +213,14 @@ def _crypto_global_notice(status: dict[str, Any], session_state: MutableMapping[
     session_state["crypto_notice_revision"] = revision
     if status.get("status") in {"partial", "failed"}:
         return "币圈现货数据部分需要复核"
-    if int(status.get("unread_count", 0) or 0):
-        return f"币圈现货有 {status['unread_count']} 项新的策略变化"
+    if int(status.get("important_symbol_count", 0) or 0):
+        return f"币圈现货今天有 {status['important_symbol_count']} 个红色币种"
     return None
 
 
 def _market_selector() -> str:
     crypto_status = read_crypto_alert_refresh_status(ROOT)
-    crypto_status["unread_count"] = load_crypto_dashboard(ROOT).get("unread_count", 0)
+    crypto_status["important_symbol_count"] = load_crypto_dashboard(ROOT).get("important_symbol_count", 0)
     crypto_label = _crypto_market_label(crypto_status)
     options = ["美股", "A股ETF", crypto_label]
     if hasattr(st, "segmented_control"):
@@ -697,10 +698,12 @@ def _render_crypto_alert_dashboard() -> None:
     if notice:
         st.info(notice)
     st.title("币圈现货关注提醒")
-    st.caption("日线 · UTC+8 · 仅提示策略变化，不构成交易指令")
+    st.caption("UTC 日线 · 北京时间每天 08:00 确认 · 仅提示策略变化，不构成交易指令")
     _render_crypto_alert_settings()
     if status.get("status") == "running":
         st.caption(f"后台检查中：{status.get('completed', 0)}/{status.get('total', 5)}")
+    elif status.get("status") in {"partial", "failed"}:
+        st.error(status.get("message") or "币圈数据拉取失败，当前结果需要人工复核。")
     dashboard = load_crypto_dashboard(ROOT)
     important_column, attention_column = st.columns(2)
     with important_column:
@@ -710,7 +713,8 @@ def _render_crypto_alert_dashboard() -> None:
     changed_only = st.checkbox("仅看有变化", key="crypto-alert-changed-only")
     table = _crypto_dashboard_table(dashboard, changed_only=changed_only, show_important=show_important, show_attention=show_attention)
     st.dataframe(_style_crypto_dashboard_table(table), use_container_width=True, hide_index=True)
-    if st.button("重新检查", key="crypto-alert-refresh"):
+    refresh_label = "人工重试币圈数据" if status.get("status") in {"partial", "failed"} else "重新检查"
+    if st.button(refresh_label, key="crypto-alert-refresh"):
         start_crypto_alert_refresh_once(ROOT, force=True)
     for state in dashboard.get("symbols", []):
         if changed_only and state.get("status") != "有变化":
@@ -719,11 +723,8 @@ def _render_crypto_alert_dashboard() -> None:
         with st.expander(f"{symbol} · {state.get('trend', '震荡/未确认')}"):
             st.write(state.get("latest_change", "暂无新的策略变化"))
             history = load_crypto_history(ROOT, symbol)
-            st.caption(f"数据截至 {state.get('data_date', '-')} · {state.get('quality', '正常')} · {crypto_history_source_caption(history)}")
-            unread_event_ids = crypto_unread_event_ids(dashboard, symbol)
-            if unread_event_ids and st.button("标记该币种已读", key=f"crypto-alert-read-{symbol}"):
-                mark_crypto_symbol_read(ROOT, symbol, unread_event_ids)
-                st.success("该币种的新提醒已标记为已读。")
+            alert_timing = f"信号K线 {state.get('latest_change_date')} · 提醒时间 {state.get('latest_alert_time')}" if state.get("latest_change_date") else "当天无策略变化"
+            st.caption(f"{alert_timing} · 数据截至 {state.get('data_date', '-')} · {state.get('quality', '正常')} · {crypto_history_source_caption(history)}")
             if not history.empty:
                 overlays = {
                     "sma120": st.checkbox("显示 MA120", value=True, key=f"crypto-alert-ma120-{symbol}"),
@@ -797,7 +798,8 @@ def _crypto_dashboard_table(
             "当前状态": state.get("status", "待检查"),
             "提醒级别": {"important": "重要", "attention": "关注"}.get(level, "-") if level_visible else "-",
             "最新变化": state.get("latest_change", "暂无新的策略变化"),
-            "变化日期": state.get("latest_change_date", "-"),
+            "信号K线": state.get("latest_change_date", "-"),
+            "提醒时间": state.get("latest_alert_time", "-"),
             "数据截至": state.get("data_date", "-"),
             "数据质量": state.get("quality", "待检查"),
         })
@@ -816,17 +818,6 @@ def _style_crypto_dashboard_table(table: pd.DataFrame) -> pd.io.formats.style.St
         return [""] * len(row)
 
     return table.style.apply(row_style, axis=1)
-
-
-def crypto_unread_event_ids(dashboard: dict[str, Any], symbol: str) -> list[str]:
-    return [
-        str(event["event_id"])
-        for event in dashboard.get("events", [])
-        if event.get("symbol") == symbol
-        and not event.get("historical_backfill", False)
-        and event.get("is_unread", True)
-        and event.get("event_id")
-    ]
 
 
 def crypto_history_source_caption(history: pd.DataFrame) -> str:

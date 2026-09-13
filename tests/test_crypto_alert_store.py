@@ -24,6 +24,18 @@ from trend_radar.crypto_signals import CryptoCurrentState, CryptoEvent  # noqa: 
 
 
 class CryptoAlertStoreTests(unittest.TestCase):
+    def test_dashboard_counts_each_important_symbol_once_for_the_latest_data_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            eth_event = CryptoEvent("eth-a", "ETH", "breakout", "向上", "2026-09-12", "2026-09-12", "突破", {}, "v3", "default", alert_level="important")
+            eth_state = CryptoCurrentState("ETH", "有变化", "上升结构", "突破；MACD背离", "2026-09-12", "2026-09-12", alert_level="important", algorithm_version="v3", preset_id="default")
+            publish_crypto_result(root, eth_state, [eth_event])
+            btc_event = CryptoEvent("btc-a", "BTC", "td9", "上涨计数", "2026-09-12", "2026-09-12", "TD9", {}, "v3", "default", alert_level="attention")
+            btc_state = CryptoCurrentState("BTC", "有变化", "上升结构", "TD9", "2026-09-12", "2026-09-12", alert_level="attention", algorithm_version="v3", preset_id="default")
+
+            dashboard = publish_crypto_result(root, btc_state, [btc_event])
+
+            self.assertEqual(dashboard["important_symbol_count"], 1)
     def test_marking_symbol_read_clears_fill_level_but_keeps_latest_message(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

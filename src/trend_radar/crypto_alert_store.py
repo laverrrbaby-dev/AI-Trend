@@ -36,7 +36,21 @@ def publish_crypto_result(root: Path, state: CryptoCurrentState, events: list[Cr
         for event in active_events:
             event["is_unread"] = not event.get("historical_backfill", False) and event.get("event_id") not in read_state.get(event.get("symbol"), [])
         unread = sum(1 for event in active_events if event["is_unread"])
-        dashboard = {"generated_at": _now_iso(), "unread_count": unread, "symbols": states, "events": active_events}
+        latest_data_date = max((str(item.get("data_date")) for item in states if item.get("data_date")), default=None)
+        important_symbol_count = sum(
+            1 for item in states
+            if item.get("data_date") == latest_data_date
+            and item.get("status") == "有变化"
+            and item.get("alert_level") == "important"
+        )
+        dashboard = {
+            "generated_at": _now_iso(),
+            "unread_count": unread,
+            "important_symbol_count": important_symbol_count,
+            "data_date": latest_data_date,
+            "symbols": states,
+            "events": active_events,
+        }
         _atomic_json(directory / "dashboard.json", dashboard)
         if state.data_date:
             snapshot_path = directory / "snapshots" / f"{state.data_date}.json"
@@ -52,7 +66,7 @@ def load_crypto_events(root: Path, symbol: str | None = None) -> list[dict[str, 
 
 def load_crypto_dashboard(root: Path) -> dict[str, Any]:
     path = root / "data" / "crypto" / "alerts" / "dashboard.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"unread_count": 0, "symbols": [], "events": []}
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"unread_count": 0, "important_symbol_count": 0, "symbols": [], "events": []}
 
 
 def replay_crypto_history(root: Path, config: CryptoAlertConfig) -> None:
@@ -70,6 +84,7 @@ def replay_crypto_history(root: Path, config: CryptoAlertConfig) -> None:
             status="无新变化",
             latest_change="暂无新的策略变化",
             latest_change_date=None,
+            latest_alert_time=None,
             alert_level="none",
             algorithm_version=config.algorithm_version,
             preset_id=config.preset_id,
@@ -127,13 +142,15 @@ def _event_payload(event: CryptoEvent) -> dict[str, Any]:
     return {"event_id": event.event_id, "symbol": event.symbol, "event_type": event.event_type, "direction": event.direction,
             "candle_date": event.candle_date, "confirmed_date": event.confirmed_date, "message": event.message,
             "evidence": event.evidence, "algorithm_version": event.algorithm_version, "preset_id": event.preset_id,
-            "historical_backfill": event.historical_backfill, "alert_level": event.alert_level}
+            "historical_backfill": event.historical_backfill, "alert_level": event.alert_level,
+            "alert_time": event.alert_time}
 
 
 def _state_payload(state: CryptoCurrentState) -> dict[str, Any]:
     return {"symbol": state.symbol, "status": state.status, "trend": state.trend, "latest_change": state.latest_change,
             "latest_change_date": state.latest_change_date, "data_date": state.data_date, "quality": state.quality, "stale": state.stale,
-            "alert_level": state.alert_level, "algorithm_version": state.algorithm_version, "preset_id": state.preset_id}
+            "alert_level": state.alert_level, "algorithm_version": state.algorithm_version, "preset_id": state.preset_id,
+            "latest_alert_time": state.latest_alert_time}
 
 
 def _event_matches_active_state(event: dict[str, Any], states: list[dict[str, Any]]) -> bool:

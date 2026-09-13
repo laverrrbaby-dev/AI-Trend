@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trend_radar.crypto_alert_refresh import (  # noqa: E402
+    _state_for_events,
     crypto_alert_refresh_is_active,
     read_crypto_alert_refresh_status,
     refresh_crypto_alerts,
@@ -25,6 +26,18 @@ from trend_radar.crypto_signals import CryptoCurrentState, CryptoEvent  # noqa: 
 
 
 class CryptoAlertRefreshTests(unittest.TestCase):
+    def test_same_day_messages_put_important_alerts_before_attention_alerts(self) -> None:
+        state = CryptoCurrentState("ETH", "有变化", "上升结构", "", None, "2026-09-12")
+        events = [
+            CryptoEvent("attention", "ETH", "ma120", "回踩", "2026-09-12", "2026-09-12", "关注：回踩 MA120", {}, ALGORITHM_VERSION, "default", alert_level="attention"),
+            CryptoEvent("important", "ETH", "macd_divergence", "看跌背离", "2026-09-12", "2026-09-12", "重要：MACD 看跌背离", {}, ALGORITHM_VERSION, "default", alert_level="important"),
+        ]
+
+        current = _state_for_events(state, events, ALGORITHM_VERSION, "default")
+
+        self.assertEqual(current.latest_change, "重要：MACD 看跌背离；关注：回踩 MA120")
+        self.assertEqual(current.alert_level, "important")
+
     def test_daily_refresh_publishes_only_events_after_the_saved_baseline_and_advances_it(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
