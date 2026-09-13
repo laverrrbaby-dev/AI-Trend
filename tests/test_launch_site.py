@@ -36,6 +36,22 @@ class LaunchSiteTests(unittest.TestCase):
         start_streamlit.assert_not_called()
         open_browser.assert_called_once_with("http://localhost:8501")
 
+    def test_unexpected_launcher_error_does_not_stop_the_site_process(self) -> None:
+        process = Mock()
+
+        with (
+            patch.object(launch_site, "_is_site_running", return_value=False),
+            patch.object(launch_site, "_ensure_environment"),
+            patch.object(launch_site, "_start_streamlit", return_value=process),
+            patch.object(launch_site, "_wait_until_ready", side_effect=RuntimeError("launcher failed")),
+            patch.object(launch_site, "_stop_process") as stop_process,
+            patch.object(sys, "argv", ["launch_site.py", "--no-browser"]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "launcher failed"):
+                launch_site.main()
+
+        stop_process.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

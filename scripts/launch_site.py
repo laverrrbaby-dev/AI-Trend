@@ -32,6 +32,7 @@ def main() -> int:
 
     venv_python = _ensure_environment()
     process = _start_streamlit(venv_python, args.port)
+    stop_requested = False
 
     try:
         if _wait_until_ready(ready_url, process):
@@ -47,9 +48,11 @@ def main() -> int:
         return process.returncode or 0
     except KeyboardInterrupt:
         print("收到停止信号，正在关闭服务...", flush=True)
+        stop_requested = True
         return 130
     finally:
-        _stop_process(process)
+        if stop_requested:
+            _stop_process(process)
 
 
 def _ensure_environment() -> Path:

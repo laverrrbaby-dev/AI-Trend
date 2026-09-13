@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_ROOT="$HOME/Library/Application Support/TrendRadar"
 PYTHON_BIN="$(command -v python3)"
 DOMAINS=("trend.com" "trend.test")
+PROXY_SERVICE="${TREND_RADAR_PROXY_SERVICE:-Wi-Fi}"
 USER_ID="$(id -u)"
 USER_AGENT="$HOME/Library/LaunchAgents/com.trend-radar.app.plist"
 SYSTEM_AGENT="/Library/LaunchDaemons/com.trend-radar.caddy.plist"
@@ -46,6 +47,21 @@ for domain in "${DOMAINS[@]}"; do
   fi
 done
 sudo dscacheutil -flushcache
+
+if networksetup -getproxybypassdomains "$PROXY_SERVICE" >/dev/null 2>&1; then
+  proxy_bypass_domains=()
+  while IFS= read -r bypass_domain; do
+    [[ -n "$bypass_domain" ]] && proxy_bypass_domains+=("$bypass_domain")
+  done < <(networksetup -getproxybypassdomains "$PROXY_SERVICE")
+  for domain in "${DOMAINS[@]}"; do
+    if [[ " ${proxy_bypass_domains[*]} " != *" $domain "* ]]; then
+      proxy_bypass_domains+=("$domain")
+    fi
+  done
+  networksetup -setproxybypassdomains "$PROXY_SERVICE" "${proxy_bypass_domains[@]}"
+else
+  echo "Could not update proxy bypass domains for $PROXY_SERVICE; add ${DOMAINS[*]} manually."
+fi
 
 mkdir -p "$RUNTIME_ROOT"
 rsync -a --delete \
