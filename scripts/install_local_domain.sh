@@ -20,6 +20,13 @@ if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'
   exit 1
 fi
 
+launchctl bootout "gui/$USER_ID" "$USER_AGENT" 2>/dev/null || true
+runtime_streamlit_pids="$(pgrep -f "$RUNTIME_ROOT/.venv/bin/python.*streamlit run app.py" || true)"
+if [[ -n "$runtime_streamlit_pids" ]]; then
+  echo "Stopping the previous runtime Streamlit process."
+  kill $runtime_streamlit_pids
+fi
+
 if ! command -v brew >/dev/null; then
   echo "Homebrew is required. Install it first from https://brew.sh/." >&2
   exit 1
@@ -69,7 +76,6 @@ sudo install -m 644 "$ROOT/config/local/Caddyfile" "$CADDY_CONFIG"
 sed "s|__CADDY_BIN__|$CADDY_BIN|g" "$ROOT/config/local/com.trend-radar.caddy.plist.template" | sudo tee "$SYSTEM_AGENT" >/dev/null
 sudo plutil -lint "$SYSTEM_AGENT"
 
-launchctl bootout "gui/$USER_ID" "$USER_AGENT" 2>/dev/null || true
 launchctl bootstrap "gui/$USER_ID" "$USER_AGENT"
 sudo launchctl bootout system "$SYSTEM_AGENT" 2>/dev/null || true
 sudo launchctl bootstrap system "$SYSTEM_AGENT"
