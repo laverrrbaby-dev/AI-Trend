@@ -3,101 +3,52 @@ from __future__ import annotations
 import argparse
 import os
 import signal
-import socket
 import subprocess
 import sys
-import threading
 import time
 import urllib.request
 import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SITE_PORT = 8501
-DEFAULT_HEARTBEAT_PORT = 8765
-IDLE_TIMEOUT_SECONDS = 12
 READY_TIMEOUT_SECONDS = 45
 
 
-class HeartbeatState:
-    def __init__(self) -> None:
-        self.last_seen = 0.0
-        self.seen_once = False
-        self.lock = threading.Lock()
-
-    def mark_seen(self) -> None:
-        with self.lock:
-            self.last_seen = time.time()
-            self.seen_once = True
-
-    def is_idle(self, timeout_seconds: int) -> bool:
-        with self.lock:
-            return self.seen_once and time.time() - self.last_seen > timeout_seconds
-
-
-class HeartbeatHandler(BaseHTTPRequestHandler):
-    state: HeartbeatState
-
-    def do_GET(self) -> None:
-        if self.path.startswith("/ping"):
-            self.state.mark_seen()
-            self.send_response(204)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            return
-
-        self.send_response(404)
-        self.end_headers()
-
-    def log_message(self, format: str, *args: object) -> None:
-        return
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Open the local ETF radar site and stop it when the page closes.")
+    parser = argparse.ArgumentParser(description="Open the local ETF radar site.")
     parser.add_argument("--port", type=int, default=int(os.environ.get("TREND_RADAR_PORT", DEFAULT_SITE_PORT)))
-    parser.add_argument(
-        "--heartbeat-port",
-        type=int,
-        default=int(os.environ.get("TREND_RADAR_HEARTBEAT_PORT", DEFAULT_HEARTBEAT_PORT)),
-    )
     parser.add_argument("--no-browser", action="store_true", help="Start the site without opening a browser.")
     args = parser.parse_args()
 
-    venv_python = _ensure_environment()
-    site_port = _first_free_port(args.port)
-    heartbeat_port = _first_free_port(args.heartbeat_port)
-    heartbeat_url = f"http://127.0.0.1:{heartbeat_port}/ping"
+    site_url = f"http://localhost:{args.port}"
+    ready_url = f"http://127.0.0.1:{args.port}"
+    if _is_site_running(ready_url):
+        print(f"网站已在运行: {site_url}", flush=True)
+        if not args.no_browser:
+            webbrowser.open(site_url)
+        return 0
 
-    state = HeartbeatState()
-    heartbeat_server = _start_heartbeat_server(heartbeat_port, state)
-    process = _start_streamlit(venv_python, site_port, heartbeat_url)
-    site_url = f"http://localhost:{site_port}"
-    ready_url = f"http://127.0.0.1:{site_port}"
+    venv_python = _ensure_environment()
+    process = _start_streamlit(venv_python, args.port)
 
     try:
         if _wait_until_ready(ready_url, process):
             print(f"网站已启动: {site_url}", flush=True)
-            print("关闭浏览器页面后，服务会在约 12 秒内自动停止。", flush=True)
+            print("关闭页面不会停止服务；在启动终端按 Ctrl-C 可主动停止。", flush=True)
             if not args.no_browser:
                 webbrowser.open(site_url)
         else:
             return process.returncode or 1
 
         while process.poll() is None:
-            if state.is_idle(IDLE_TIMEOUT_SECONDS):
-                print("页面已关闭，正在停止服务...", flush=True)
-                break
             time.sleep(1)
         return process.returncode or 0
     except KeyboardInterrupt:
         print("收到停止信号，正在关闭服务...", flush=True)
         return 130
     finally:
-        heartbeat_server.shutdown()
-        heartbeat_server.server_close()
         _stop_process(process)
 
 
@@ -126,29 +77,16 @@ def _can_import_streamlit(venv_python: Path) -> bool:
     return result.returncode == 0
 
 
-def _first_free_port(start: int) -> int:
-    for port in range(start, start + 100):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                probe.bind(("127.0.0.1", port))
-            except OSError:
-                continue
-            return port
-    raise RuntimeError(f"No free port found from {start} to {start + 99}.")
+def _is_site_running(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=1):
+            return True
+    except OSError:
+        return False
 
 
-def _start_heartbeat_server(port: int, state: HeartbeatState) -> ThreadingHTTPServer:
-    HeartbeatHandler.state = state
-    server = ThreadingHTTPServer(("127.0.0.1", port), HeartbeatHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server
-
-
-def _start_streamlit(venv_python: Path, port: int, heartbeat_url: str) -> subprocess.Popen[bytes]:
+def _start_streamlit(venv_python: Path, port: int) -> subprocess.Popen[bytes]:
     env = os.environ.copy()
-    env["TREND_RADAR_HEARTBEAT_URL"] = heartbeat_url
     env.setdefault("BROWSER", "none")
 
     command = [

@@ -175,7 +175,6 @@ def main() -> None:
     )
     _apply_style()
     _install_code_copy_handler()
-    _install_lifecycle_heartbeat()
     crypto_refresh_started = _start_crypto_background_work()
     _render_crypto_alert_completion_poll(force_poll=crypto_refresh_started)
 
@@ -1421,28 +1420,6 @@ def _embed_hidden_html(html: str) -> None:
         )
         return
     components.html(html, height=0, width=0)
-
-
-def _install_lifecycle_heartbeat() -> None:
-    heartbeat_url = os.environ.get("TREND_RADAR_HEARTBEAT_URL")
-    if not heartbeat_url:
-        return
-
-    # The local launcher watches this ping and shuts Streamlit down after the
-    # browser page has been closed for a short idle window.
-    _embed_hidden_html(
-        f"""
-        <script>
-        const heartbeatUrl = {json.dumps(heartbeat_url)};
-        function pingLauncher() {{
-          const img = new Image();
-          img.src = heartbeatUrl + "?t=" + Date.now();
-        }}
-        pingLauncher();
-        window.setInterval(pingLauncher, 2500);
-        </script>
-        """
-    )
 
 
 def _install_code_copy_handler() -> None:
