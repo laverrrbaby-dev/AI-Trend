@@ -17,6 +17,16 @@
 ./open_trend_radar.command
 ```
 
+### 本地域名访问（macOS）
+
+运行一次以下安装器，可直接在浏览器访问 `http://trend.test`，无需输入端口。它会安装 Caddy 作为本机 `80 -> 8501` 代理，并用 `launchd` 在登录后启动项目、在意外退出时自动重启：
+
+```bash
+./scripts/install_local_domain.sh
+```
+
+安装器会请求管理员密码，用于写入 `/etc/hosts`、监听本机 80 端口，以及注册 Caddy 系统服务。项目本身作为当前用户的服务运行；其日志在 `/tmp/trend-radar-launcher*.log`。
+
 传统 Streamlit 运行方式仍然可用：
 
 ```bash
