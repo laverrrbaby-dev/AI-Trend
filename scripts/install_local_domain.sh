@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_ROOT="$HOME/Library/Application Support/TrendRadar"
+PYTHON_BIN="$(command -v python3)"
 DOMAINS=("trend.com" "trend.test")
 USER_ID="$(id -u)"
 USER_AGENT="$HOME/Library/LaunchAgents/com.trend-radar.app.plist"
@@ -11,6 +12,11 @@ CADDY_CONFIG="/usr/local/etc/trend-radar/Caddyfile"
 
 if [[ "$(uname)" != "Darwin" ]]; then
   echo "This installer supports macOS only." >&2
+  exit 1
+fi
+
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+  echo "Python 3.11 or newer is required; found: $PYTHON_BIN" >&2
   exit 1
 fi
 
@@ -46,9 +52,16 @@ rsync -a --delete \
 if [[ -d "$ROOT/data" ]]; then
   rsync -a "$ROOT/data/" "$RUNTIME_ROOT/data/"
 fi
+if [[ -x "$RUNTIME_ROOT/.venv/bin/python" ]] && ! "$RUNTIME_ROOT/.venv/bin/python" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+  echo "Removing incompatible runtime virtual environment."
+  rm -rf "$RUNTIME_ROOT/.venv"
+fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
-sed "s|__PROJECT_ROOT__|$RUNTIME_ROOT|g" "$ROOT/config/local/com.trend-radar.app.plist.template" > "$USER_AGENT"
+sed \
+  -e "s|__PROJECT_ROOT__|$RUNTIME_ROOT|g" \
+  -e "s|__PYTHON_BIN__|$PYTHON_BIN|g" \
+  "$ROOT/config/local/com.trend-radar.app.plist.template" > "$USER_AGENT"
 plutil -lint "$USER_AGENT"
 
 sudo install -d -m 755 /usr/local/etc/trend-radar

@@ -6,8 +6,7 @@
   <string>com.trend-radar.app</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string>
-    <string>python3</string>
+    <string>__PYTHON_BIN__</string>
     <string>__PROJECT_ROOT__/scripts/launch_site.py</string>
     <string>--no-browser</string>
   </array>
