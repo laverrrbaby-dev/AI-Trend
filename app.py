@@ -95,7 +95,7 @@ from trend_radar.crypto_market_data import load_crypto_history  # noqa: E402
 
 
 STATUS_ORDER = ["强趋势", "趋势向上", "转强观察", "震荡观察", "弱观察", "数据不足"]
-MARKET_OPTIONS = ["美股", "A股ETF", "币圈现货"]
+MARKET_OPTIONS = ["美股", "币圈现货"]
 DATE_SELECT_KEY = "selected_data_date"
 PENDING_DATE_SELECT_KEY = "pending_selected_data_date"
 MARKET_SELECT_KEY = "selected_market_tag"
@@ -182,12 +182,10 @@ def main() -> None:
     _render_crypto_alert_completion_poll(force_poll=crypto_refresh_started)
 
     market = _market_selector()
-    if market == "美股":
-        _render_us_stock_turnover_page()
-    elif market == "币圈现货":
+    if market == "币圈现货":
         _render_crypto_turnover_page()
     else:
-        _render_a_share_etf_page()
+        _render_us_stock_turnover_page()
 
 
 def _render_runtime_update_control() -> None:
@@ -300,7 +298,7 @@ def _market_selector() -> str:
     crypto_status = read_crypto_alert_refresh_status(ROOT)
     crypto_status["important_symbol_count"] = load_crypto_dashboard(ROOT).get("important_symbol_count", 0)
     crypto_label = _crypto_market_label(crypto_status)
-    options = ["美股", "A股ETF", crypto_label]
+    options = ["美股", crypto_label]
     if hasattr(st, "segmented_control"):
         selected = st.segmented_control("市场", options, default=options[0], key=MARKET_SELECT_KEY)
     else:

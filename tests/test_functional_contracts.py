@@ -377,8 +377,8 @@ class FunctionalContractsTests(unittest.TestCase):
             "2026-06-02",
         )
 
-    def test_market_options_include_crypto_spot(self) -> None:
-        self.assertEqual(app.MARKET_OPTIONS, ["美股", "A股ETF", "币圈现货"])
+    def test_market_options_hide_a_share_etf(self) -> None:
+        self.assertEqual(app.MARKET_OPTIONS, ["美股", "币圈现货"])
 
     def test_crypto_display_table_matches_requested_fields_and_order(self) -> None:
         frame = pd.DataFrame(
