@@ -192,20 +192,18 @@ def _render_runtime_update_control() -> None:
     _, control_column = st.columns([5, 1])
     with control_column:
         if st.button("更新并重启服务", key="runtime-update-request", use_container_width=True):
-            st.session_state["runtime_update_confirmation"] = True
+            _render_runtime_update_dialog()
 
-    if not st.session_state.get("runtime_update_confirmation"):
-        return
 
+@st.dialog("确认更新并重启服务？")
+def _render_runtime_update_dialog() -> None:
     st.warning("更新会短暂中断本页面服务。确认后将在终端同步最新代码并重启服务。")
-    confirm_column, cancel_column, _ = st.columns([1, 1, 4])
+    confirm_column, cancel_column = st.columns(2)
     with confirm_column:
         if st.button("确认更新并重启", key="runtime-update-confirm", type="primary"):
-            st.session_state["runtime_update_confirmation"] = False
-            st.info(_open_runtime_update_terminal())
+            st.toast(_open_runtime_update_terminal())
     with cancel_column:
         if st.button("取消", key="runtime-update-cancel"):
-            st.session_state["runtime_update_confirmation"] = False
             st.rerun()
 
 
