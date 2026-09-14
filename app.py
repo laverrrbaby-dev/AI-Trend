@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import subprocess
 import sys
 import threading
 from collections.abc import MutableMapping
@@ -175,6 +177,7 @@ def main() -> None:
     )
     _apply_style()
     _install_code_copy_handler()
+    _render_runtime_update_control()
     crypto_refresh_started = _start_crypto_background_work()
     _render_crypto_alert_completion_poll(force_poll=crypto_refresh_started)
 
@@ -185,6 +188,52 @@ def main() -> None:
         _render_crypto_turnover_page()
     else:
         _render_a_share_etf_page()
+
+
+def _render_runtime_update_control() -> None:
+    _, control_column = st.columns([5, 1])
+    with control_column:
+        if st.button("更新并重启服务", key="runtime-update-request", use_container_width=True):
+            st.session_state["runtime_update_confirmation"] = True
+
+    if not st.session_state.get("runtime_update_confirmation"):
+        return
+
+    st.warning("更新会短暂中断本页面服务。确认后将在终端同步最新代码并重启服务。")
+    confirm_column, cancel_column, _ = st.columns([1, 1, 4])
+    with confirm_column:
+        if st.button("确认更新并重启", key="runtime-update-confirm", type="primary"):
+            st.session_state["runtime_update_confirmation"] = False
+            st.info(_open_runtime_update_terminal())
+    with cancel_column:
+        if st.button("取消", key="runtime-update-cancel"):
+            st.session_state["runtime_update_confirmation"] = False
+            st.rerun()
+
+
+def _open_runtime_update_terminal(runtime_root: Path = ROOT) -> str:
+    source_record = runtime_root / "config" / "local" / "update-source-root.txt"
+    try:
+        configured_source = source_record.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "未找到更新来源配置；请先在项目目录运行一次安装器。"
+
+    source_path = Path(configured_source).expanduser()
+    if not configured_source or not source_path.is_absolute():
+        return "更新来源无效；请先在项目目录运行一次安装器。"
+    source_root = source_path.resolve()
+
+    update_script = source_root / "scripts" / "update_local_runtime.sh"
+    if not update_script.is_file():
+        return "更新来源无效；请先在项目目录运行一次安装器。"
+
+    command = f"cd {shlex.quote(str(source_root))} && exec {shlex.quote(str(update_script))}"
+    apple_script = f'tell application "Terminal" to do script {json.dumps(command, ensure_ascii=False)}'
+    try:
+        subprocess.Popen(["/usr/bin/osascript", "-e", apple_script])
+    except OSError:
+        return "无法打开终端；请在项目目录运行 scripts/update_local_runtime.sh。"
+    return "已在终端打开更新任务；完成后请刷新本页面。"
 
 
 def _start_crypto_background_work() -> bool:

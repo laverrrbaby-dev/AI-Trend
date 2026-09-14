@@ -75,6 +75,8 @@ rsync -a --delete \
 if [[ -d "$ROOT/data" ]]; then
   rsync -a "$ROOT/data/" "$RUNTIME_ROOT/data/"
 fi
+mkdir -p "$RUNTIME_ROOT/config/local"
+printf '%s\n' "$ROOT" > "$RUNTIME_ROOT/config/local/update-source-root.txt"
 if [[ -x "$RUNTIME_ROOT/.venv/bin/python" ]] && ! "$RUNTIME_ROOT/.venv/bin/python" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
   echo "Removing incompatible runtime virtual environment."
   rm -rf "$RUNTIME_ROOT/.venv"
