@@ -68,25 +68,25 @@ class CryptoDashboardTableTests(unittest.TestCase):
             {"symbol": "BTC", "status": "有变化", "alert_level": "important", "latest_change": "MACD普通看跌背离"},
             {"symbol": "ETH", "status": "有变化", "alert_level": "attention", "latest_change": "TD9：上涨计数"},
             {"symbol": "SOL", "status": "无新变化", "alert_level": "none", "latest_change": "暂无新的策略变化"},
-        ]}, show_attention=True)
+        ]})
 
-        styles = _style_crypto_dashboard_table(table)._compute().ctx
+        styles = _style_crypto_dashboard_table(table, show_attention=True)._compute().ctx
 
         self.assertTrue(all(("background-color", "#ffe0e0") in styles[(0, column)] for column in range(len(table.columns))))
         self.assertTrue(all(("background-color", "#fff0d9") in styles[(1, column)] for column in range(len(table.columns))))
         self.assertFalse(any(styles.get((2, column), []) for column in range(len(table.columns))))
 
-    def test_attention_fill_and_label_are_hidden_by_default_but_important_remains_visible(self) -> None:
+    def test_alert_labels_remain_visible_when_alert_fills_are_disabled(self) -> None:
         table = _crypto_dashboard_table({"symbols": [
             {"symbol": "BTC", "status": "有变化", "alert_level": "important"},
             {"symbol": "ETH", "status": "有变化", "alert_level": "attention"},
         ]})
 
-        styles = _style_crypto_dashboard_table(table)._compute().ctx
+        styles = _style_crypto_dashboard_table(table, show_important=False, show_attention=False)._compute().ctx
 
         self.assertEqual(table.loc[0, "提醒级别"], "重要")
-        self.assertEqual(table.loc[1, "提醒级别"], "-")
-        self.assertTrue(any(("background-color", "#ffe0e0") in styles.get((0, column), []) for column in range(len(table.columns))))
+        self.assertEqual(table.loc[1, "提醒级别"], "关注")
+        self.assertFalse(any(styles.get((0, column), []) for column in range(len(table.columns))))
         self.assertFalse(any(styles.get((1, column), []) for column in range(len(table.columns))))
 
     def test_table_distinguishes_signal_candle_from_next_morning_alert_time(self) -> None:
