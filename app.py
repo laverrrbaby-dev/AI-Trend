@@ -196,7 +196,12 @@ def _render_runtime_update_control() -> None:
             _render_runtime_update_dialog()
 
 
-@st.dialog("确认更新并重启服务？")
+def _dialog(title: str):
+    dialog = getattr(st, "dialog", None)
+    return dialog(title) if dialog is not None else (lambda function: function)
+
+
+@_dialog("确认更新并重启服务？")
 def _render_runtime_update_dialog() -> None:
     st.warning("更新会短暂中断本页面服务。确认后将在终端同步最新代码并重启服务。")
     confirm_column, cancel_column = st.columns(2)
