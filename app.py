@@ -201,7 +201,10 @@ def _render_runtime_update_dialog() -> None:
     confirm_column, cancel_column = st.columns(2)
     with confirm_column:
         if st.button("确认更新并重启", key="runtime-update-confirm", type="primary"):
-            st.toast(_open_runtime_update_terminal())
+            message = _open_runtime_update_terminal()
+            st.toast(message)
+            if message == "已在终端打开更新任务；完成后请刷新本页面。":
+                _schedule_runtime_update_refresh()
     with cancel_column:
         if st.button("取消", key="runtime-update-cancel"):
             st.rerun()
@@ -230,6 +233,21 @@ def _open_runtime_update_terminal(runtime_root: Path = ROOT) -> str:
     except OSError:
         return "无法打开终端；请在项目目录运行 scripts/update_local_runtime.sh。"
     return "已在终端打开更新任务；完成后请刷新本页面。"
+
+
+def _schedule_runtime_update_refresh() -> None:
+    _embed_hidden_html(
+        """
+        <script>
+        (() => {
+          const parentWindow = window.parent;
+          parentWindow.setTimeout(() => {
+            parentWindow.location.reload();
+          }, 2000);
+        })();
+        </script>
+        """
+    )
 
 
 def _start_crypto_background_work() -> bool:

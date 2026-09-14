@@ -14,6 +14,14 @@ import app as app_module  # noqa: E402
 
 
 class RuntimeUpdateTests(unittest.TestCase):
+    def test_schedule_runtime_update_refresh_reloads_the_parent_page_after_two_seconds(self) -> None:
+        with patch.object(app_module, "_embed_hidden_html") as embed:
+            app_module._schedule_runtime_update_refresh()
+
+        html = embed.call_args.args[0]
+        self.assertIn("parentWindow.location.reload()", html)
+        self.assertIn("2000", html)
+
     def test_open_runtime_update_starts_the_fixed_update_script_in_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
