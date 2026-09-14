@@ -26,6 +26,15 @@ class CryptoAlertRefreshResult:
     warnings: tuple[str, ...] = ()
 
 
+def pending_crypto_alert_date(root: Path = PROJECT_ROOT, now: datetime | None = None) -> str | None:
+    config = load_crypto_alert_config(root)
+    target_date = latest_complete_crypto_date(now)
+    baseline_path = root / "data" / "crypto" / "alerts" / "baseline.json"
+    if _baseline_matches(baseline_path, config.algorithm_version, config.preset_id, target_date):
+        return None
+    return target_date
+
+
 def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: datetime | None = None, fetch_json=None) -> CryptoAlertRefreshResult:
     config = load_crypto_alert_config(root)
     baseline_path = root / "data" / "crypto" / "alerts" / "baseline.json"

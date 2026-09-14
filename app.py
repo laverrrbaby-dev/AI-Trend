@@ -79,6 +79,7 @@ from trend_radar.us_stocks import (  # noqa: E402
 from trend_radar.us_stock_anomalies import serialize_anomaly_details  # noqa: E402
 from trend_radar.us_stock_news import load_cached_news, load_or_fetch_news  # noqa: E402
 from trend_radar.crypto_alert_refresh import (  # noqa: E402
+    pending_crypto_alert_date,
     read_crypto_alert_refresh_status,
     start_crypto_alert_refresh_once,
 )
@@ -255,28 +256,56 @@ def _start_crypto_background_work() -> bool:
     try:
         if not load_crypto_alert_config(ROOT).startup_refresh:
             return False
+        target_date = pending_crypto_alert_date(ROOT)
+        if target_date is None or not _claim_crypto_auto_refresh_date(st.session_state, target_date):
+            return False
         return start_crypto_alert_refresh_once(ROOT)
     except Exception:
         return False
+
+
+def _claim_crypto_auto_refresh_date(session_state: MutableMapping[str, Any], target_date: str) -> bool:
+    state_key = "crypto_alert_auto_refresh_date"
+    if session_state.get(state_key) == target_date:
+        return False
+    session_state[state_key] = target_date
+    return True
 
 
 def _crypto_alert_refresh_completed(previous: str, current: str) -> bool:
     return previous == "running" and current != "running"
 
 
+def _crypto_alert_status_needs_rerun(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+    previous_status = str(previous.get("status") or "idle")
+    current_status = str(current.get("status") or "idle")
+    if current_status == "running":
+        return False
+    previous_revision = str(previous.get("finished_at") or previous.get("started_at") or "")
+    current_revision = str(current.get("finished_at") or current.get("started_at") or "")
+    return _crypto_alert_refresh_completed(previous_status, current_status) or bool(
+        current_revision and current_revision != previous_revision
+    )
+
+
 def _render_crypto_alert_completion_poll(force_poll: bool = False) -> None:
-    initial_status = str(read_crypto_alert_refresh_status().get("status") or "idle")
-    if not hasattr(st, "fragment") or (not force_poll and initial_status != "running"):
+    initial_status = read_crypto_alert_refresh_status()
+    try:
+        startup_refresh = load_crypto_alert_config(ROOT).startup_refresh
+    except Exception:
+        startup_refresh = False
+    if not hasattr(st, "fragment") or (not startup_refresh and not force_poll):
         return
-    state_key = "crypto_alert_poll_status"
+    state_key = "crypto_alert_poll_snapshot"
     st.session_state[state_key] = initial_status
 
-    @st.fragment(run_every="2s")
+    @st.fragment(run_every="5s")
     def _completion_poll() -> None:
-        previous = str(st.session_state.get(state_key) or "idle")
-        current = str(read_crypto_alert_refresh_status().get("status") or "idle")
+        previous = dict(st.session_state.get(state_key) or {})
+        _start_crypto_background_work()
+        current = read_crypto_alert_refresh_status()
         st.session_state[state_key] = current
-        if _crypto_alert_refresh_completed(previous, current):
+        if _crypto_alert_status_needs_rerun(previous, current):
             st.rerun()
 
     _completion_poll()

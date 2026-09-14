@@ -21,11 +21,27 @@ from app import (  # noqa: E402
 
 
 class CryptoDashboardTableTests(unittest.TestCase):
+    def test_crypto_auto_refresh_claims_each_complete_candle_date_once_per_session(self) -> None:
+        claim = getattr(app_module, "_claim_crypto_auto_refresh_date", lambda state, target: False)
+        state: dict[str, str] = {}
+
+        self.assertTrue(claim(state, "2026-09-13"))
+        self.assertFalse(claim(state, "2026-09-13"))
+        self.assertTrue(claim(state, "2026-09-14"))
+
     def test_background_crypto_completion_requests_a_full_page_refresh(self) -> None:
         completed = getattr(app_module, "_crypto_alert_refresh_completed", lambda previous, current: False)
         self.assertTrue(completed("running", "succeeded"))
         self.assertTrue(completed("running", "partial"))
         self.assertFalse(completed("succeeded", "succeeded"))
+
+    def test_fast_crypto_refresh_completion_is_detected_by_revision_even_without_running_state(self) -> None:
+        needs_rerun = getattr(app_module, "_crypto_alert_status_needs_rerun", lambda previous, current: False)
+        previous = {"status": "succeeded", "finished_at": "2026-09-14T00:00:00Z"}
+        current = {"status": "succeeded", "finished_at": "2026-09-14T00:00:02Z"}
+
+        self.assertTrue(needs_rerun(previous, current))
+        self.assertFalse(needs_rerun(current, current))
 
     def test_history_source_caption_uses_cached_actual_source_and_pair(self) -> None:
         history = pd.DataFrame({"source": ["okx"], "pair": ["BTC-USDT"]})

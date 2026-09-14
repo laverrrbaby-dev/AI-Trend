@@ -13,6 +13,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from trend_radar import crypto_alert_refresh as refresh_module  # noqa: E402
 from trend_radar.crypto_alert_refresh import (  # noqa: E402
     _state_for_events,
     crypto_alert_refresh_is_active,
@@ -26,6 +27,24 @@ from trend_radar.crypto_signals import CryptoCurrentState, CryptoEvent  # noqa: 
 
 
 class CryptoAlertRefreshTests(unittest.TestCase):
+    def test_pending_date_appears_when_an_open_app_crosses_0800_china_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            alert_dir = root / "data/crypto/alerts"
+            alert_dir.mkdir(parents=True)
+            (alert_dir / "baseline.json").write_text(json.dumps({
+                "algorithm_version": ALGORITHM_VERSION,
+                "preset_id": "default",
+                "date": "2026-09-12",
+            }))
+            pending_date = getattr(refresh_module, "pending_crypto_alert_date", lambda root, now=None: None)
+
+            before = pending_date(root, datetime.fromisoformat("2026-09-14T07:59:59+08:00"))
+            after = pending_date(root, datetime.fromisoformat("2026-09-14T08:00:00+08:00"))
+
+            self.assertIsNone(before)
+            self.assertEqual(after, "2026-09-13")
+
     def test_catch_up_refresh_does_not_show_an_older_event_as_today(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

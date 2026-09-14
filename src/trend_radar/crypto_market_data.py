@@ -1,4 +1,4 @@
-"""Fixed-universe crypto OHLCV acquisition with UTC+8 completeness rules."""
+"""Fixed-universe crypto OHLCV acquisition using standard UTC daily candles."""
 
 from __future__ import annotations
 
