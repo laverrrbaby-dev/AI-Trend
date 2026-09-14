@@ -37,7 +37,7 @@ class RuntimeUpdateTests(unittest.TestCase):
             with patch.object(app_module.subprocess, "Popen") as popen:
                 message = app_module._open_runtime_update_terminal(runtime_root)
 
-        self.assertEqual(message, "已在终端打开更新任务；完成后请刷新本页面。")
+        self.assertEqual(message, "已在终端打开更新任务；2 秒后将自动刷新页面。")
         command = popen.call_args.args[0]
         self.assertEqual(command[:2], ["/usr/bin/osascript", "-e"])
         self.assertIn(str(update_script), command[2])

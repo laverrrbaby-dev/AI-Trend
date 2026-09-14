@@ -203,7 +203,7 @@ def _render_runtime_update_dialog() -> None:
         if st.button("确认更新并重启", key="runtime-update-confirm", type="primary"):
             message = _open_runtime_update_terminal()
             st.toast(message)
-            if message == "已在终端打开更新任务；完成后请刷新本页面。":
+            if message == "已在终端打开更新任务；2 秒后将自动刷新页面。":
                 _schedule_runtime_update_refresh()
     with cancel_column:
         if st.button("取消", key="runtime-update-cancel"):
@@ -232,7 +232,7 @@ def _open_runtime_update_terminal(runtime_root: Path = ROOT) -> str:
         subprocess.Popen(["/usr/bin/osascript", "-e", apple_script])
     except OSError:
         return "无法打开终端；请在项目目录运行 scripts/update_local_runtime.sh。"
-    return "已在终端打开更新任务；完成后请刷新本页面。"
+    return "已在终端打开更新任务；2 秒后将自动刷新页面。"
 
 
 def _schedule_runtime_update_refresh() -> None:
