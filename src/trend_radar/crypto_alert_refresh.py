@@ -69,7 +69,10 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
                 else [event for event in sourced_events if previous_date is None or event.candle_date > previous_date]
             )
             visible_events = [] if historical_replay else [event for event in publishable if event.candle_date == state.data_date]
-            publish_crypto_result(root, _state_for_events(state, visible_events, config.algorithm_version, config.preset_id), publishable)
+            refreshed_state = _state_for_events(state, visible_events, config.algorithm_version, config.preset_id)
+            if not visible_events:
+                refreshed_state = _preserve_same_day_latest_change(root, refreshed_state)
+            publish_crypto_result(root, refreshed_state, publishable)
             if state.data_date:
                 completed_dates.append(state.data_date)
             statuses["symbols"][symbol] = {"phase": "succeeded", "data_date": state.data_date}
@@ -185,6 +188,24 @@ def _state_for_events(state: CryptoCurrentState, events: list[CryptoEvent], algo
         algorithm_version=algorithm_version,
         preset_id=preset_id,
         latest_alert_time=latest.alert_time,
+    )
+
+
+def _preserve_same_day_latest_change(root: Path, state: CryptoCurrentState) -> CryptoCurrentState:
+    path = root / "data" / "crypto" / "alerts" / "state" / f"{state.symbol}.json"
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return state
+    if previous.get("status") != "有变化" or previous.get("data_date") != state.data_date:
+        return state
+    return replace(
+        state,
+        status="有变化",
+        latest_change=str(previous.get("latest_change") or state.latest_change),
+        latest_change_date=previous.get("latest_change_date") or state.latest_change_date,
+        alert_level=str(previous.get("alert_level") or state.alert_level),
+        latest_alert_time=previous.get("latest_alert_time") or state.latest_alert_time,
     )
 
 
