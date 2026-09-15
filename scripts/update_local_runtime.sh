@@ -37,7 +37,7 @@ if [[ "$(cat "$RUNTIME_ROOT/config/local/update-source-root.txt")" != "$ROOT" ]]
   exit 1
 fi
 cmp "$ROOT/app.py" "$RUNTIME_ROOT/app.py"
-diff -qr "$ROOT/src" "$RUNTIME_ROOT/src"
+diff -qr --exclude='__pycache__' "$ROOT/src" "$RUNTIME_ROOT/src"
 cmp "$ROOT/config/crypto_alerts.default.json" "$RUNTIME_ROOT/config/crypto_alerts.default.json"
 
 echo "正在启动新版 TrendRadar 服务..."
