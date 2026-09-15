@@ -90,7 +90,7 @@ class CryptoDashboardTableTests(unittest.TestCase):
 
         self.assertTrue(all(("background-color", "#ffe0e0") in styles[(0, column)] for column in range(len(table.columns))))
         self.assertTrue(all(("background-color", "#fff0d9") in styles[(1, column)] for column in range(len(table.columns))))
-        self.assertFalse(any(styles.get((2, column), []) for column in range(len(table.columns))))
+        self.assertFalse(any(styles.get((2, column), []) for column in range(len(table.columns)) if column != 3))
 
     def test_alert_labels_remain_visible_when_alert_fills_are_disabled(self) -> None:
         table = _crypto_dashboard_table({"symbols": [
@@ -102,8 +102,21 @@ class CryptoDashboardTableTests(unittest.TestCase):
 
         self.assertEqual(table.loc[0, "提醒级别"], "重要")
         self.assertEqual(table.loc[1, "提醒级别"], "关注")
-        self.assertFalse(any(styles.get((0, column), []) for column in range(len(table.columns))))
-        self.assertFalse(any(styles.get((1, column), []) for column in range(len(table.columns))))
+        self.assertFalse(any(styles.get((0, column), []) for column in range(len(table.columns)) if column != 3))
+        self.assertFalse(any(styles.get((1, column), []) for column in range(len(table.columns)) if column != 3))
+
+    def test_latest_change_cells_allow_wrapping(self) -> None:
+        table = _crypto_dashboard_table({"symbols": [{
+            "symbol": "ETH",
+            "status": "有变化",
+            "latest_change": "日内越过关键高点后收盘回落；触及已确认阻力位后回落；价格行为变化：上影线针形；RSI14出现隐藏看涨背离",
+        }]})
+
+        styles = _style_crypto_dashboard_table(table)._compute().ctx
+
+        latest_change_styles = styles[(1, 3)]
+        self.assertIn(("white-space", "normal"), latest_change_styles)
+        self.assertIn(("overflow-wrap", "anywhere"), latest_change_styles)
 
     def test_table_distinguishes_signal_candle_from_next_morning_alert_time(self) -> None:
         table = _crypto_dashboard_table({"symbols": [{

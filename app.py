@@ -838,10 +838,8 @@ def _render_crypto_alert_dashboard() -> None:
         show_attention = st.checkbox("显示关注级标记", value=False, key="crypto-alert-show-attention")
     changed_only = st.checkbox("仅看有变化", key="crypto-alert-changed-only")
     table = _crypto_dashboard_table(dashboard, changed_only=changed_only)
-    st.dataframe(
+    st.table(
         _style_crypto_dashboard_table(table, show_important=show_important, show_attention=show_attention),
-        use_container_width=True,
-        hide_index=True,
     )
     refresh_label = "人工重试币圈数据" if status.get("status") in {"partial", "failed"} else "重新检查"
     if st.button(refresh_label, key="crypto-alert-refresh"):
@@ -948,7 +946,14 @@ def _style_crypto_dashboard_table(
             return ["background-color: #fff0d9"] * len(row)
         return [""] * len(row)
 
-    return table.style.apply(row_style, axis=1)
+    return table.style.apply(row_style, axis=1).set_properties(
+        subset=["最新变化"],
+        **{
+            "white-space": "normal",
+            "overflow-wrap": "anywhere",
+            "word-break": "break-word",
+        },
+    )
 
 
 def crypto_history_source_caption(history: pd.DataFrame) -> str:
