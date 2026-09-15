@@ -31,6 +31,15 @@ rsync -a --delete \
 mkdir -p "$RUNTIME_ROOT/config/local"
 printf '%s\n' "$ROOT" > "$RUNTIME_ROOT/config/local/update-source-root.txt"
 
+echo "正在校验运行副本..."
+if [[ "$(cat "$RUNTIME_ROOT/config/local/update-source-root.txt")" != "$ROOT" ]]; then
+  echo "运行副本的更新来源记录不正确。" >&2
+  exit 1
+fi
+cmp "$ROOT/app.py" "$RUNTIME_ROOT/app.py"
+diff -qr "$ROOT/src" "$RUNTIME_ROOT/src"
+cmp "$ROOT/config/crypto_alerts.default.json" "$RUNTIME_ROOT/config/crypto_alerts.default.json"
+
 echo "正在启动新版 TrendRadar 服务..."
 launchctl bootstrap "gui/$USER_ID" "$USER_AGENT"
 echo "更新完成：请回到浏览器刷新 http://trend.com。"
