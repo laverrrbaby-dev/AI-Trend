@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import ssl
+import subprocess
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -137,8 +140,49 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _fetch_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
     request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
     context = ssl.create_default_context(cafile=certifi.where())
-    with urllib.request.urlopen(request, timeout=30, context=context) as response:
+    proxy = _resolve_http_proxy()
+    handlers = [urllib.request.HTTPSHandler(context=context)]
+    if proxy:
+        handlers.insert(0, urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    opener = urllib.request.build_opener(*handlers)
+    with opener.open(request, timeout=30) as response:
         result = json.loads(response.read().decode("utf-8"))
     if not isinstance(result, dict):
         raise RuntimeError("OpenRouter 返回格式异常")
     return result
+
+
+def _resolve_http_proxy() -> str | None:
+    """Resolve an explicit proxy first, then the macOS system HTTP proxy."""
+    for name in ("TREND_RADAR_HTTP_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return _macos_http_proxy()
+
+
+@lru_cache(maxsize=1)
+def _macos_http_proxy() -> str | None:
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["scutil", "--proxy"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    values = {}
+    for line in result.stdout.splitlines():
+        if " : " not in line:
+            continue
+        key, value = line.split(" : ", 1)
+        values[key.strip()] = value.strip()
+    if values.get("HTTPSEnable") == "1" and values.get("HTTPSProxy") and values.get("HTTPSPort"):
+        return f"http://{values['HTTPSProxy']}:{values['HTTPSPort']}"
+    if values.get("HTTPEnable") == "1" and values.get("HTTPProxy") and values.get("HTTPPort"):
+        return f"http://{values['HTTPProxy']}:{values['HTTPPort']}"
+    return None

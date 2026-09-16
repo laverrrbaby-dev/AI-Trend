@@ -35,9 +35,33 @@ from trend_radar.us_stocks import (  # noqa: E402
 )
 from trend_radar.us_stock_anomalies import evaluate_anomalies, serialize_anomaly_details
 from trend_radar.us_stock_news import load_cached_news, load_or_fetch_news
+from trend_radar.us_stock_news import _fetch_json
 
 
 class UsStocksTests(unittest.TestCase):
+    def test_news_http_fetch_uses_macos_system_proxy_when_environment_is_unset(self) -> None:
+        response = type("Response", (), {
+            "__enter__": lambda self: self,
+            "__exit__": lambda self, *args: None,
+            "read": lambda self: b'{"choices": []}',
+        })()
+        proxy_output = "HTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 7890\n"
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "trend_radar.us_stock_news.platform.system", return_value="Darwin"
+        ), patch("trend_radar.us_stock_news.subprocess.run") as run, patch(
+            "trend_radar.us_stock_news.urllib.request.build_opener"
+        ) as build_opener:
+            run.return_value.stdout = proxy_output
+            build_opener.return_value.open.return_value = response
+
+            self.assertEqual(_fetch_json("https://example.test/news", {}, {}), {"choices": []})
+
+        build_opener.assert_called_once()
+        self.assertEqual(
+            build_opener.call_args.args[0].proxies,
+            {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},
+        )
+
     def test_refresh_persists_yahoo_history_and_anomaly_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
