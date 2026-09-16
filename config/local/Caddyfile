@@ -1,4 +1,4 @@
-http://trend.com, http://trend.test {
+http://trend.test {
     bind 127.0.0.1
     reverse_proxy 127.0.0.1:8501
 }

@@ -42,4 +42,4 @@ cmp "$ROOT/config/crypto_alerts.default.json" "$RUNTIME_ROOT/config/crypto_alert
 
 echo "正在启动新版 TrendRadar 服务..."
 launchctl bootstrap "gui/$USER_ID" "$USER_AGENT"
-echo "更新完成：请回到浏览器刷新 http://trend.com。"
+echo "更新完成：请回到浏览器刷新 http://trend.test。"

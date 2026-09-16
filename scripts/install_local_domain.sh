@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_ROOT="$HOME/Library/Application Support/TrendRadar"
 PYTHON_BIN="$(command -v python3)"
-DOMAINS=("trend.com" "trend.test")
+DOMAINS=("trend.test")
 PROXY_SERVICE="${TREND_RADAR_PROXY_SERVICE:-Wi-Fi}"
 USER_ID="$(id -u)"
 USER_AGENT="$HOME/Library/LaunchAgents/com.trend-radar.app.plist"
@@ -98,5 +98,5 @@ launchctl bootstrap "gui/$USER_ID" "$USER_AGENT"
 sudo launchctl bootout system "$SYSTEM_AGENT" 2>/dev/null || true
 sudo launchctl bootstrap system "$SYSTEM_AGENT"
 
-echo "Ready: http://trend.com and http://trend.test"
+echo "Ready: http://trend.test"
 echo "Runtime copy: $RUNTIME_ROOT"

@@ -4,7 +4,7 @@ These instructions apply to the whole repository.
 
 ## Runtime deployment and synchronization
 
-- The canonical source directory is this Git worktree. The live macOS service runs from the deployed copy at `~/Library/Application Support/TrendRadar`; do not assume that changing files here changes the page currently served at `trend.com`.
+- The canonical source directory is this Git worktree. The live macOS service runs from the deployed copy at `~/Library/Application Support/TrendRadar`; do not assume that changing files here changes the page currently served at `trend.test`.
 - Do not replace the deployed copy with a symlink to this worktree. The worktree is under macOS's user Documents area, and the deployed copy exists in Application Support specifically to avoid launchd/Streamlit access restrictions. Keep the copy-based deployment model.
 - After changing application code, tests that affect runtime behavior, runtime scripts, configuration, or UI assets, run the source-to-runtime deployment before claiming the change is available:
 
