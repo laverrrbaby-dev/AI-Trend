@@ -1028,14 +1028,6 @@ def _render_legacy_crypto_turnover() -> None:
         st.warning("暂无可展示的币圈现货成交额缓存，正在尝试拉取最新数据。")
         return
 
-    if metadata.get("partial"):
-        failed = metadata.get("failed_exchanges") or []
-        failed_names = "、".join(str(item.get("exchange")) for item in failed if isinstance(item, dict))
-        skipped = metadata.get("skipped_exchanges") or []
-        skipped_names = "、".join(str(item) for item in skipped)
-        detail = failed_names or skipped_names or "未记录"
-        st.warning(f"本次为部分数据源结果，未纳入数据源：{detail}。")
-
     st.dataframe(
         _display_crypto_table(snapshot),
         width="stretch",
