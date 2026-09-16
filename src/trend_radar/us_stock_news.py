@@ -129,12 +129,12 @@ def _news_path(root: Path, data_date: str, symbol: str) -> Path:
     return path
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _fetch_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:

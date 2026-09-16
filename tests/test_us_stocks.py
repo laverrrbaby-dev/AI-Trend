@@ -39,6 +39,10 @@ from trend_radar.us_stock_news import _fetch_json
 
 
 class UsStocksTests(unittest.TestCase):
+    def test_missing_news_cache_is_reported_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            self.assertIsNone(load_cached_news("AAA", "2026-06-03", root=Path(tempdir)))
+
     def test_news_http_fetch_uses_macos_system_proxy_when_environment_is_unset(self) -> None:
         response = type("Response", (), {
             "__enter__": lambda self: self,
