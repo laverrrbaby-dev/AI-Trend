@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import pandas as pd
@@ -21,6 +22,15 @@ from app import (  # noqa: E402
 
 
 class CryptoDashboardTableTests(unittest.TestCase):
+    def test_crypto_turnover_page_does_not_render_legacy_turnover_block(self) -> None:
+        with patch.object(app_module, "_render_crypto_alert_dashboard") as alert_dashboard, patch.object(
+            app_module, "_render_legacy_crypto_turnover"
+        ) as legacy_turnover:
+            app_module._render_crypto_turnover_page()
+
+        alert_dashboard.assert_called_once_with()
+        legacy_turnover.assert_not_called()
+
     def test_crypto_auto_refresh_claims_each_complete_candle_date_once_per_session(self) -> None:
         claim = getattr(app_module, "_claim_crypto_auto_refresh_date", lambda state, target: False)
         state: dict[str, str] = {}

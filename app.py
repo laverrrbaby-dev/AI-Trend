@@ -815,7 +815,6 @@ def _start_crypto_refresh_thread(force: bool) -> None:
 
 def _render_crypto_turnover_page() -> None:
     _render_crypto_alert_dashboard()
-    _render_legacy_crypto_turnover()
 
 
 def _render_crypto_alert_dashboard() -> None:
