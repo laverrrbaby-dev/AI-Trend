@@ -35,28 +35,26 @@ def load_or_fetch_news(
 ) -> dict[str, Any]:
     path = _news_path(root, data_date, symbol)
     cached = load_cached_news(symbol, data_date, root=root)
-    if cached:
+    if cached and cached.get("status") == "ok":
         return cached
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        return {"status": "missing_key", "articles": [], "message": "未配置 OPENROUTER_API_KEY"}
-    loader = fetch_json or _fetch_json
-    try:
-        payload = loader(
-            OPENROUTER_CHAT_URL,
-            {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            _request_payload(symbol, company_name, data_date),
-        )
-        result = _normalize_response(payload)
-    except Exception as exc:  # noqa: BLE001 - news must never block anomaly details
-        result = {"status": "failed", "articles": [], "message": f"新闻检索失败：{exc}"}
+        result = {"status": "missing_key", "articles": [], "message": "未配置 OPENROUTER_API_KEY"}
+    else:
+        loader = fetch_json or _fetch_json
+        try:
+            payload = loader(
+                OPENROUTER_CHAT_URL,
+                {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                _request_payload(symbol, company_name, data_date),
+            )
+            result = _normalize_response(payload)
+        except Exception as exc:  # noqa: BLE001 - news must never block anomaly details
+            result = {"status": "failed", "articles": [], "message": f"新闻检索失败：{exc}"}
     result["symbol"] = symbol
     result["data_date"] = data_date
     result["generated_at"] = datetime.now().isoformat(timespec="seconds")
-    if result.get("status") == "ok":
-        _news_path(root, data_date, symbol).write_text(
-            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
 
 

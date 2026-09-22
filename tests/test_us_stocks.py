@@ -155,9 +155,11 @@ class UsStocksTests(unittest.TestCase):
                 }
 
             first = load_or_fetch_news("AAA", "示例公司", "2026-06-03", root=Path(tempdir), fetch_json=flaky_fetch)
+            failed_cache = load_cached_news("AAA", "2026-06-03", root=Path(tempdir))
             second = load_or_fetch_news("AAA", "示例公司", "2026-06-03", root=Path(tempdir), fetch_json=flaky_fetch)
 
         self.assertEqual(first["status"], "failed")
+        self.assertEqual(failed_cache["status"], "failed")
         self.assertEqual(second["status"], "ok")
         self.assertEqual(len(second["articles"]), 1)
         self.assertEqual(calls, 2)
