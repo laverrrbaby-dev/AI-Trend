@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trend_radar.crypto_alert_config import (  # noqa: E402
+    ALGORITHM_VERSION,
     activate_crypto_alert_preset,
     load_crypto_alert_config,
     list_crypto_alert_presets,
@@ -54,6 +55,13 @@ class CryptoAlertConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             with self.assertRaises(ValueError):
                 save_crypto_alert_preset(Path(tempdir), "bad-period", {"parameters": {"sma_period": 0}})
+
+    def test_saved_preset_uses_current_signal_algorithm_after_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            save_crypto_alert_preset(root, "old", {"algorithm_version": "crypto-alerts-v3"})
+
+            self.assertEqual(load_crypto_alert_config(root, "old").algorithm_version, ALGORITHM_VERSION)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,8 @@ def evaluate_crypto_signals(symbol: str, frame: pd.DataFrame, config: CryptoAler
         _add_td_events(events, symbol, values, config)
     if "price_action" in config.enabled_alerts:
         _add_price_action_events(events, symbol, values, config)
+        _add_breakout_retest_events(events, symbol, values, config)
+        _add_trendline_events(events, symbol, values, config)
     if "divergence" in config.enabled_alerts:
         _add_divergence_events(events, symbol, values, config)
     if "ma120" in config.enabled_alerts:
@@ -131,11 +133,9 @@ def _add_vegas_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFram
 def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:
     for index in range(1, len(frame)):
         trend = _classify_trend_at(frame, index, int(config.parameters["main_pivot"]))
-        open_price = float(frame.iloc[index]["开盘价"])
         close = float(frame.iloc[index]["收盘价"])
         high = float(frame.iloc[index]["最高价"])
         low = float(frame.iloc[index]["最低价"])
-        previous_open = float(frame.iloc[index - 1]["开盘价"])
         previous_close = float(frame.iloc[index - 1]["收盘价"])
         high_levels = _confirmed_levels(frame, index, "high", config)
         low_levels = _confirmed_levels(frame, index, "low", config)
@@ -146,8 +146,9 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
                 level_name = "主要前高" if scope == "main" else "短期前高"
                 _append_event(events, symbol, "breakout", "向上", frame, index, config, f"收盘突破{level_name}", "important" if quality else "attention", evidence)
             if high > level and close <= level:
-                important = scope == "main" and trend == "下降结构" and _is_strong_rejection_close(frame, index, False, config)
-                _append_event(events, symbol, "same_day_rejection", "上方拒绝", frame, index, config, "日内越过关键高点后收盘回落", "important" if important else "attention", evidence)
+                important = scope == "main" and _pin_bar_direction(frame.iloc[index], config) == "bearish"
+                message = "冲高突破失败·偏空" if important else "日内越过关键高点后收盘回落"
+                _append_event(events, symbol, "same_day_rejection", "上方拒绝", frame, index, config, message, "important" if important else "attention", evidence)
             if previous_close <= level and high >= level and close < level:
                 _append_event(events, symbol, "level_reaction", "阻力回落", frame, index, config, "触及已确认阻力位后回落", evidence=evidence)
             lookback = int(config.parameters["delayed_false_break_bars"])
@@ -169,20 +170,171 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
             if close >= level and any(float(frame.iloc[position]["收盘价"]) < level for position in range(max(0, index - lookback), index)):
                 important = scope == "main" and trend == "上升结构" and _is_strong_rejection_close(frame, index, True, config)
                 _append_event(events, symbol, "delayed_false_break", "向下回升", frame, index, config, "跌破后回到关键低点内", "important" if important else "attention", evidence)
-        body = abs(close - open_price)
-        previous_body = abs(previous_close - previous_open)
-        if body >= float(config.parameters["engulfing_body_ratio"]) * max(previous_body, 1e-12) and ((close > open_price > previous_close > previous_open) or (close < open_price < previous_close < previous_open)):
-            direction = "阳线吞没" if close > open_price else "阴线吞没"
-            important = _pattern_at_aligned_reference(frame, index, close > open_price, trend, config)
+        engulfing = _engulfing_direction(frame, index, config)
+        if engulfing:
+            direction = "阳线吞没" if engulfing == "bullish" else "阴线吞没"
+            important = _pattern_at_aligned_reference(frame, index, engulfing == "bullish", trend, config)
             _append_event(events, symbol, "engulfing", direction, frame, index, config, f"价格行为变化：{direction}", "important" if important else "attention")
-        upper_wick = high - max(open_price, close)
-        lower_wick = min(open_price, close) - low
-        other = min(upper_wick, lower_wick)
-        if body > 0 and max(upper_wick, lower_wick) >= float(config.parameters["pin_wick_body_ratio"]) * body and other <= float(config.parameters["pin_other_wick_body_max"]) * body:
-            direction = "下影线" if lower_wick > upper_wick else "上影线"
-            bullish = lower_wick > upper_wick
+        pin_direction = _pin_bar_direction(frame.iloc[index], config)
+        if pin_direction:
+            bullish = pin_direction == "bullish"
+            direction = "下影线" if bullish else "上影线"
             important = _pattern_at_aligned_reference(frame, index, bullish, trend, config)
             _append_event(events, symbol, "pin_bar", direction, frame, index, config, f"价格行为变化：{direction}针形", "important" if important else "attention")
+
+
+def _pin_bar_direction(row: pd.Series, config: CryptoAlertConfig) -> str | None:
+    open_price = float(row["开盘价"])
+    close = float(row["收盘价"])
+    body = abs(close - open_price)
+    if body <= 0:
+        return None
+    upper_wick = float(row["最高价"]) - max(open_price, close)
+    lower_wick = min(open_price, close) - float(row["最低价"])
+    ratio = float(config.parameters["pin_wick_body_ratio"])
+    other_limit = float(config.parameters["pin_other_wick_body_max"])
+    if upper_wick >= ratio * body and lower_wick <= other_limit * body:
+        return "bearish"
+    if lower_wick >= ratio * body and upper_wick <= other_limit * body:
+        return "bullish"
+    return None
+
+
+def _add_breakout_retest_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:
+    breakouts: dict[str, list[CryptoEvent]] = {}
+    for event in events:
+        if event.event_type == "breakout" and event.evidence.get("level_scope") == "main":
+            breakouts.setdefault(event.candle_date, []).append(event)
+    active: list[dict[str, Any]] = []
+    for index, row in frame.iterrows():
+        candle_date = str(row["日期"])
+        for breakout in breakouts.get(candle_date, []):
+            active.append({"level": float(breakout.evidence["level"]), "direction": breakout.direction,
+                           "breakout_date": candle_date, "breakout_index": index,
+                           "attention_sent": False, "important_sent": False})
+        survivors: list[dict[str, Any]] = []
+        for item in active:
+            if index <= item["breakout_index"]:
+                survivors.append(item)
+                continue
+            days = (date.fromisoformat(candle_date) - date.fromisoformat(item["breakout_date"])).days
+            if days > int(config.parameters.get("retest_max_days", 90)):
+                continue
+            level = item["level"]
+            bullish = item["direction"] == "向上"
+            close = float(row["收盘价"])
+            if (bullish and close < level) or (not bullish and close > level):
+                continue
+            if not item["important_sent"] and float(row["最低价"]) <= level <= float(row["最高价"]):
+                pattern = _pin_bar_direction(row, config) == ("bullish" if bullish else "bearish")
+                pattern = pattern or _engulfing_direction(frame, index, config) == ("bullish" if bullish else "bearish")
+                strong = _is_high_volume_long_body(frame, index, bullish, config)
+                matured = index - item["breakout_index"] > int(config.parameters.get("retest_min_gap_bars", 5))
+                important = strong or (matured and pattern)
+                if important or not item["attention_sent"]:
+                    level_name = "主要前高" if bullish else "主要前低"
+                    message = f"回踩确认·{'偏多' if bullish else '偏空'}" if important else f"正在回踩{level_name}"
+                    evidence = {"level": level, "level_scope": "main", "breakout_date": item["breakout_date"],
+                                "elapsed_bars": index - item["breakout_index"], "confirmation": "strong_volume_body" if strong else "price_action" if important else "touch"}
+                    identity = f"{item['breakout_date']}:{level:.12g}"
+                    _append_event(events, symbol, "breakout_retest", "向上" if bullish else "向下", frame, index, config,
+                                  message, "important" if important else "attention", evidence, identity=identity)
+                item["attention_sent"] = True
+                item["important_sent"] = important
+            survivors.append(item)
+        active = survivors
+
+
+def _add_trendline_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:
+    pivot_period = int(config.parameters["short_pivot"])
+    tolerance = float(config.parameters.get("trendline_tolerance_pct", 0.5)) / 100
+    notified: set[tuple[str, int, int]] = set()
+    invalidated: set[tuple[str, int, int]] = set()
+    closes_beyond: dict[tuple[str, int, int], int] = {}
+    for index in range(pivot_period * 2 + 1, len(frame)):
+        row = frame.iloc[index]
+        for side, column, direction in (("low", "最低价", "向上"), ("high", "最高价", "向下")):
+            flags = frame.get(f"swing_{side}_{pivot_period}", pd.Series(False, index=frame.index))
+            anchors = [position for position in range(index - pivot_period + 1) if bool(flags.iloc[position])]
+            if len(anchors) < 2:
+                continue
+            first, second = anchors[-2:]
+            first_price, second_price = float(frame.iloc[first][column]), float(frame.iloc[second][column])
+            rising = side == "low"
+            if (rising and second_price <= first_price) or (not rising and second_price >= first_price):
+                continue
+            key = (side, first, second)
+            if key in invalidated:
+                continue
+            if (date.fromisoformat(str(row["日期"])) - date.fromisoformat(str(frame.iloc[second]["日期"]))).days > int(config.parameters.get("retest_max_days", 90)):
+                continue
+            slope = (second_price - first_price) / (second - first)
+            line = second_price + slope * (index - second)
+            if line <= 0:
+                continue
+            close = float(row["收盘价"])
+            outside = close < line if rising else close > line
+            closes_beyond[key] = closes_beyond.get(key, 0) + 1 if outside else 0
+            if closes_beyond[key] >= 2:
+                invalidated.add(key)
+                continue
+            if key in notified or index < second + pivot_period:
+                continue
+            previous_line = line - slope
+            previous_close = float(frame.iloc[index - 1]["收盘价"])
+            approaches_from_trend_side = previous_close >= previous_line if rising else previous_close <= previous_line
+            if not approaches_from_trend_side:
+                continue
+            intersects = float(row["最低价"]) <= line * (1 + tolerance) and float(row["最高价"]) >= line * (1 - tolerance)
+            if not intersects:
+                continue
+            evidence = {"line_price": line, "anchor_dates": [str(frame.iloc[first]["日期"]), str(frame.iloc[second]["日期"])],
+                        "anchor_prices": [first_price, second_price], "tolerance_pct": tolerance * 100}
+            name = "上升" if rising else "下降"
+            _append_event(events, symbol, "trendline_retest", direction, frame, index, config,
+                          f"{name}趋势线第三次接近", evidence=evidence, identity=f"{side}:{first}:{second}")
+            notified.add(key)
+
+
+def _engulfing_direction(frame: pd.DataFrame, index: int, config: CryptoAlertConfig) -> str | None:
+    if index == 0:
+        return None
+    previous = frame.iloc[index - 1]
+    current = frame.iloc[index]
+    previous_open, previous_close = float(previous["开盘价"]), float(previous["收盘价"])
+    current_open, current_close = float(current["开盘价"]), float(current["收盘价"])
+    previous_body = abs(previous_close - previous_open)
+    current_body = abs(current_close - current_open)
+    if previous_body <= 0 or current_body < float(config.parameters["engulfing_body_ratio"]) * previous_body:
+        return None
+    if previous_close < previous_open and current_close > current_open and current_open <= previous_close and current_close >= previous_open:
+        return "bullish"
+    if previous_close > previous_open and current_close < current_open and current_open >= previous_close and current_close <= previous_open:
+        return "bearish"
+    return None
+
+
+def _is_high_volume_long_body(frame: pd.DataFrame, index: int, bullish: bool, config: CryptoAlertConfig) -> bool:
+    lookback = int(config.parameters.get("retest_body_lookback", 20))
+    if index < lookback:
+        return False
+    row = frame.iloc[index]
+    open_price, close = float(row["开盘价"]), float(row["收盘价"])
+    if open_price <= 0 or (close <= open_price if bullish else close >= open_price):
+        return False
+    previous = frame.iloc[index - lookback : index]
+    previous_volume = previous["成交量"].astype(float)
+    if previous_volume.mean() <= 0 or float(row["成交量"]) < float(config.parameters.get("retest_volume_ratio", 1.5)) * previous_volume.mean():
+        return False
+    bodies = (previous["收盘价"].astype(float) - previous["开盘价"].astype(float)).abs() / previous["开盘价"].astype(float)
+    body_fraction = abs(close - open_price) / open_price
+    if body_fraction < bodies.quantile(1 - float(config.parameters.get("retest_body_top_fraction", 0.2)), interpolation="higher"):
+        return False
+    high, low = float(row["最高价"]), float(row["最低价"])
+    if high <= low:
+        return False
+    outer_fraction = float(config.parameters["breakout_close_outer_fraction"])
+    return close >= high - (high - low) * outer_fraction if bullish else close <= low + (high - low) * outer_fraction
 
 
 def _add_divergence_events(events: list[CryptoEvent], symbol: str, frame: pd.DataFrame, config: CryptoAlertConfig) -> None:
@@ -376,7 +528,9 @@ def _upgrade_confluence(events: list[CryptoEvent]) -> list[CryptoEvent]:
                 upgraded[index] = replace(upgraded[index], alert_level="important")
     directional_confirmations: set[tuple[str, str]] = set()
     for event in events:
-        if event.event_type not in {"breakout", "ma120_retest_exit", "vegas_retest_exit"}:
+        if event.event_type not in {"breakout", "breakout_retest", "ma120_retest_exit", "vegas_retest_exit"}:
+            continue
+        if event.event_type == "breakout_retest" and event.alert_level != "important":
             continue
         direction = "bullish" if "向上" in event.direction else "bearish" if "向下" in event.direction else ""
         if direction:
@@ -440,9 +594,10 @@ def _append_event(
     message: str,
     alert_level: str = "attention",
     evidence: dict[str, Any] | None = None,
+    identity: str = "",
 ) -> None:
     date = str(frame.iloc[index]["日期"])
-    event_id = f"{symbol}:{event_type}:{direction}:{date}:{config.algorithm_version}:{config.preset_id}"
+    event_id = f"{symbol}:{event_type}:{direction}:{date}:{config.algorithm_version}:{config.preset_id}{':' + identity if identity else ''}"
     payload = {"close": float(frame.iloc[index]["收盘价"]), **(evidence or {})}
     events.append(CryptoEvent(event_id, symbol, event_type, direction, date, date, message,
                               payload, config.algorithm_version, config.preset_id, alert_level=alert_level,

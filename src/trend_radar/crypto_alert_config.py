@@ -12,7 +12,7 @@ from typing import Any
 from .config import PROJECT_ROOT
 
 CRYPTO_ALERT_SYMBOLS = ("BTC", "ETH", "SOL", "XAUT", "BNB")
-ALGORITHM_VERSION = "crypto-alerts-v3"
+ALGORITHM_VERSION = "crypto-alerts-v4"
 _ALERT_NAMES = frozenset({"dow", "price_action", "divergence", "td", "ma120", "vegas"})
 _PRESET_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 
@@ -87,12 +87,18 @@ def _parse(payload: dict[str, Any], preset_id: str) -> CryptoAlertConfig:
         "breakout_body_atr": 1.0,
         "breakout_close_outer_fraction": 1 / 3,
         "breakout_volume_ratio": 1.5,
+        "retest_min_gap_bars": 5,
+        "retest_max_days": 90,
+        "retest_body_lookback": 20,
+        "retest_volume_ratio": 1.5,
+        "retest_body_top_fraction": 0.2,
+        "trendline_tolerance_pct": 0.5,
     }.items():
         parameters.setdefault(key, value)
     _validate_parameters(parameters)
     return CryptoAlertConfig(
         preset_id=preset_id,
-        algorithm_version=str(payload.get("algorithm_version", ALGORITHM_VERSION)),
+        algorithm_version=ALGORITHM_VERSION,
         timezone=str(payload.get("timezone", "Asia/Shanghai")),
         symbols=symbols,
         history_bars=history_bars,
@@ -168,6 +174,8 @@ def _validate_parameters(parameters: dict[str, Any]) -> None:
         "close_deviation_pct", "xaut_close_deviation_pct",
         "macd_fast", "macd_slow", "macd_signal", "breakout_body_atr",
         "breakout_close_outer_fraction", "breakout_volume_ratio",
+        "retest_max_days", "retest_body_lookback", "retest_volume_ratio", "retest_body_top_fraction",
+        "trendline_tolerance_pct",
     }
     for key, value in parameters.items():
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
@@ -178,5 +186,11 @@ def _validate_parameters(parameters: dict[str, Any]) -> None:
             raise ValueError("crypto alert parameter cannot be negative: pin_other_wick_body_max")
         if key == "breakout_close_outer_fraction" and not 0 < float(value) <= 0.5:
             raise ValueError("breakout_close_outer_fraction must be in (0, 0.5]")
+        if key == "retest_min_gap_bars" and (int(value) != value or value < 0):
+            raise ValueError("retest_min_gap_bars must be a nonnegative integer")
+        if key in {"retest_max_days", "retest_body_lookback"} and int(value) != value:
+            raise ValueError(f"{key} must be an integer")
+        if key == "retest_body_top_fraction" and not 0 < float(value) <= 1:
+            raise ValueError("retest_body_top_fraction must be in (0, 1]")
     if float(parameters.get("divergence_min_gap", 1)) > float(parameters.get("divergence_max_gap", 1)):
         raise ValueError("divergence_min_gap cannot exceed divergence_max_gap")

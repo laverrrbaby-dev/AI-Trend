@@ -45,6 +45,7 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
         _write_status(root, status)
         return CryptoAlertRefreshResult("skipped", 0, len(config.symbols))
     historical_replay = _baseline_requires_replay(baseline_path, config.algorithm_version, config.preset_id)
+    show_current_after_upgrade = historical_replay and _baseline_matches_preset(baseline_path, config.preset_id)
     previous_date = _baseline_date(baseline_path) if not historical_replay else None
     completed_dates: list[str] = []
     statuses: dict[str, Any] = {"status": "running", "started_at": datetime.now(UTC).isoformat(), "completed": 0, "total": len(config.symbols), "symbols": {}}
@@ -64,11 +65,11 @@ def refresh_crypto_alerts(root: Path = PROJECT_ROOT, force: bool = False, now: d
             state, events = evaluate_crypto_signals(symbol, frame, config)
             sourced_events = [replace(event, evidence={**event.evidence, "source": history.source}) for event in events]
             publishable = (
-                [replace(event, historical_backfill=True) for event in sourced_events]
+                [replace(event, historical_backfill=not (show_current_after_upgrade and event.candle_date == target_date)) for event in sourced_events]
                 if historical_replay
                 else [event for event in sourced_events if previous_date is None or event.candle_date > previous_date]
             )
-            visible_events = [] if historical_replay else [event for event in publishable if event.candle_date == state.data_date]
+            visible_events = [event for event in publishable if not event.historical_backfill and event.candle_date == state.data_date]
             refreshed_state = _state_for_events(state, visible_events, config.algorithm_version, config.preset_id)
             if not visible_events:
                 refreshed_state = _preserve_same_day_latest_change(root, refreshed_state)
@@ -154,6 +155,14 @@ def _baseline_requires_replay(path: Path, algorithm_version: str, preset_id: str
     return baseline.get("algorithm_version") != algorithm_version or baseline.get("preset_id") != preset_id
 
 
+def _baseline_matches_preset(path: Path, preset_id: str) -> bool:
+    try:
+        baseline = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return baseline.get("preset_id") == preset_id and bool(baseline.get("date"))
+
+
 def _baseline_date(path: Path) -> str | None:
     try:
         return str(json.loads(path.read_text(encoding="utf-8")).get("date") or "") or None
@@ -197,7 +206,8 @@ def _preserve_same_day_latest_change(root: Path, state: CryptoCurrentState) -> C
         previous = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return state
-    if previous.get("status") != "有变化" or previous.get("data_date") != state.data_date:
+    if (previous.get("status") != "有变化" or previous.get("data_date") != state.data_date
+            or previous.get("algorithm_version") != state.algorithm_version or previous.get("preset_id") != state.preset_id):
         return state
     return replace(
         state,

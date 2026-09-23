@@ -1,6 +1,6 @@
 {
   "preset_id": "default",
-  "algorithm_version": "crypto-alerts-v3",
+  "algorithm_version": "crypto-alerts-v4",
   "timezone": "Asia/Shanghai",
   "symbols": ["BTC", "ETH", "SOL", "XAUT", "BNB"],
   "history_bars": 500,
@@ -36,6 +36,12 @@
     "breakout_body_atr": 1.0,
     "breakout_close_outer_fraction": 0.3333333333,
     "breakout_volume_ratio": 1.5,
+    "retest_min_gap_bars": 5,
+    "retest_max_days": 90,
+    "retest_body_lookback": 20,
+    "retest_volume_ratio": 1.5,
+    "retest_body_top_fraction": 0.2,
+    "trendline_tolerance_pct": 0.5,
     "close_deviation_pct": 0.5,
     "xaut_close_deviation_pct": 1.0
   }

@@ -177,6 +177,69 @@ class CryptoAlertRefreshTests(unittest.TestCase):
 
             self.assertTrue(all(state["status"] == "无新变化" for state in load_crypto_dashboard(root)["symbols"]))
 
+    def test_algorithm_upgrade_shows_only_new_rules_on_the_latest_complete_candle(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            alert_dir = root / "data/crypto/alerts"
+            alert_dir.mkdir(parents=True)
+            (alert_dir / "baseline.json").write_text(json.dumps({
+                "algorithm_version": "crypto-alerts-v3", "preset_id": "default", "date": "2026-09-10",
+            }))
+            frame = pd.DataFrame({
+                "日期": ["2026-09-09", "2026-09-10"], "开盘价": [100.0, 100.0],
+                "最高价": [101.0, 102.0], "最低价": [99.0, 99.0], "收盘价": [100.0, 101.0],
+                "成交量": [1.0, 1.0], "成交额": [100.0, 101.0], "is_complete": [True, True],
+            })
+            history = CryptoHistoryResult("BTC", "binance", "BTCUSDT", frame)
+
+            def evaluate(symbol, values, config):
+                events = [
+                    CryptoEvent(f"{symbol}-old", symbol, "td9", "上涨计数", "2026-09-09", "2026-09-09", "旧信号", {}, config.algorithm_version, config.preset_id, alert_level="important"),
+                    CryptoEvent(f"{symbol}-today", symbol, "breakout_retest", "向上", "2026-09-10", "2026-09-10", "新规则当天信号", {}, config.algorithm_version, config.preset_id, alert_level="attention"),
+                ]
+                return CryptoCurrentState(symbol, "有变化", "上升结构", "新规则当天信号", "2026-09-10", "2026-09-10"), events
+
+            with patch("trend_radar.crypto_alert_refresh.fetch_crypto_history", return_value=history), \
+                 patch("trend_radar.crypto_alert_refresh.fetch_latest_backup_candle", return_value={"日期": "2026-09-10", "收盘价": 101.0}), \
+                 patch("trend_radar.crypto_alert_refresh.calculate_indicators", side_effect=lambda values, config: values), \
+                 patch("trend_radar.crypto_alert_refresh.evaluate_crypto_signals", side_effect=evaluate):
+                refresh_crypto_alerts(root, now=datetime(2026, 9, 11, 12, tzinfo=UTC))
+
+            dashboard = load_crypto_dashboard(root)
+            self.assertEqual({event["event_id"] for event in dashboard["events"] if not event["historical_backfill"]}, {f"{symbol}-today" for symbol in ("BTC", "ETH", "SOL", "XAUT", "BNB")})
+            self.assertTrue(all(event["historical_backfill"] for event in dashboard["events"] if event["event_id"].endswith("-old")))
+            self.assertTrue(all(state["latest_change"] == "新规则当天信号" for state in dashboard["symbols"]))
+
+    def test_algorithm_upgrade_does_not_keep_an_old_same_day_red_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            alert_dir = root / "data/crypto/alerts"
+            alert_dir.mkdir(parents=True)
+            (alert_dir / "baseline.json").write_text(json.dumps({
+                "algorithm_version": "crypto-alerts-v3", "preset_id": "default", "date": "2026-09-10",
+            }))
+            old = CryptoCurrentState("BTC", "有变化", "上升结构", "旧版红色提醒", "2026-09-10", "2026-09-10",
+                                     alert_level="important", algorithm_version="crypto-alerts-v3", preset_id="default")
+            publish_crypto_result(root, old, [])
+            frame = pd.DataFrame({
+                "日期": ["2026-09-10"], "开盘价": [100.0], "最高价": [101.0],
+                "最低价": [99.0], "收盘价": [100.0], "成交量": [1.0],
+                "成交额": [100.0], "is_complete": [True],
+            })
+            history = CryptoHistoryResult("BTC", "binance", "BTCUSDT", frame)
+
+            def evaluate(symbol, values, config):
+                return CryptoCurrentState(symbol, "无新变化", "上升结构", "暂无新的策略变化", None, "2026-09-10"), []
+
+            with patch("trend_radar.crypto_alert_refresh.fetch_crypto_history", return_value=history), \
+                 patch("trend_radar.crypto_alert_refresh.fetch_latest_backup_candle", return_value={"日期": "2026-09-10", "收盘价": 100.0}), \
+                 patch("trend_radar.crypto_alert_refresh.evaluate_crypto_signals", side_effect=evaluate):
+                refresh_crypto_alerts(root, now=datetime(2026, 9, 11, 12, tzinfo=UTC))
+
+            dashboard = load_crypto_dashboard(root)
+            self.assertEqual(dashboard["important_symbol_count"], 0)
+            self.assertEqual(next(item for item in dashboard["symbols"] if item["symbol"] == "BTC")["status"], "无新变化")
+
     def test_refresh_writes_status_and_keeps_all_fixed_symbols_on_source_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

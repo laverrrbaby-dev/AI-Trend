@@ -201,6 +201,158 @@ class CryptoTrendSignalTests(unittest.TestCase):
         event = next(event for event in events if event.event_type == "same_day_rejection" and event.candle_date == "2026-01-18")
         self.assertEqual(event.alert_level, "attention")
 
+    def test_bearish_pin_bar_above_main_high_is_important_even_in_an_uptrend(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([100.0] * 18)
+        frame["td_up"] = 0
+        for column in ("swing_high_3", "swing_low_3", "swing_high_5", "swing_low_5"):
+            frame[column] = False
+        frame.loc[[1, 7], "swing_high_5"] = True
+        frame.loc[[2, 8], "swing_low_5"] = True
+        frame.loc[1, "最高价"], frame.loc[7, "最高价"] = 90.0, 100.0
+        frame.loc[2, "最低价"], frame.loc[8, "最低价"] = 60.0, 70.0
+        frame.loc[17, ["开盘价", "最高价", "最低价", "收盘价"]] = [100.0, 103.0, 98.5, 99.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        rejection = next(event for event in events if event.event_type == "same_day_rejection" and event.candle_date == "2026-01-18")
+        self.assertEqual((rejection.alert_level, rejection.message), ("important", "冲高突破失败·偏空"))
+
+        frame.loc[17, ["开盘价", "最高价", "最低价", "收盘价"]] = [100.0, 101.0, 99.5, 99.8]
+        _, mild_events = evaluate_crypto_signals("BTC", frame, config)
+        mild = next(event for event in mild_events if event.event_type == "same_day_rejection" and event.candle_date == "2026-01-18")
+        self.assertEqual(mild.alert_level, "attention")
+
+    def test_main_breakout_retest_waits_five_full_candles_before_pin_bar_confirmation(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _breakout_retest_frame()
+        frame.loc[31, ["开盘价", "最高价", "最低价", "收盘价"]] = [102.0, 106.0, 100.0, 105.0]
+        frame.loc[32, ["开盘价", "最高价", "最低价", "收盘价"]] = [105.0, 106.0, 102.0, 103.0]
+        frame.loc[33:35, ["开盘价", "最高价", "最低价", "收盘价"]] = [103.0, 104.0, 102.0, 103.0]
+        frame.loc[36, ["开盘价", "最高价", "最低价", "收盘价"]] = [103.0, 104.2, 100.0, 104.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        retests = [event for event in events if event.event_type == "breakout_retest"]
+        self.assertEqual([(event.candle_date, event.alert_level) for event in retests], [
+            ("2026-02-01", "attention"),
+            ("2026-02-06", "important"),
+        ])
+        self.assertEqual(retests[-1].evidence["level"], 100.0)
+
+    def test_third_rising_low_near_an_automatic_trendline_is_attention(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([105.0] * 18)
+        frame["td_up"] = 0
+        for column in ("swing_high_3", "swing_low_3", "swing_high_5", "swing_low_5"):
+            frame[column] = False
+        frame.loc[[3, 10], "swing_low_3"] = True
+        frame.loc[3, "最低价"], frame.loc[10, "最低价"] = 90.0, 95.0
+        frame.loc[17, ["开盘价", "最高价", "最低价", "收盘价"]] = [105.0, 106.0, 100.4, 104.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        trendline = next(event for event in events if event.event_type == "trendline_retest")
+        self.assertEqual((trendline.candle_date, trendline.alert_level), ("2026-01-18", "attention"))
+        self.assertAlmostEqual(trendline.evidence["line_price"], 100.0)
+        self.assertEqual(trendline.evidence["anchor_dates"], ["2026-01-04", "2026-01-11"])
+
+    def test_third_trendline_contact_can_alert_when_second_anchor_becomes_confirmed(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([105.0] * 14)
+        frame["td_up"] = 0
+        for column in ("swing_high_3", "swing_low_3", "swing_high_5", "swing_low_5"):
+            frame[column] = False
+        frame.loc[[3, 10], "swing_low_3"] = True
+        frame.loc[3, "最低价"], frame.loc[10, "最低价"] = 90.0, 95.0
+        frame.loc[13, ["开盘价", "最高价", "最低价", "收盘价"]] = [105.0, 106.0, 97.2, 104.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        self.assertTrue(any(event.event_type == "trendline_retest" and event.candle_date == "2026-01-14" for event in events))
+
+    def test_third_falling_high_near_a_descending_trendline_is_attention(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([95.0] * 18)
+        frame["td_up"] = 0
+        for column in ("swing_high_3", "swing_low_3", "swing_high_5", "swing_low_5"):
+            frame[column] = False
+        frame.loc[[3, 10], "swing_high_3"] = True
+        frame.loc[3, "最高价"], frame.loc[10, "最高价"] = 110.0, 105.0
+        frame.loc[17, ["开盘价", "最高价", "最低价", "收盘价"]] = [95.0, 100.4, 94.0, 96.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        trendline = next(event for event in events if event.event_type == "trendline_retest")
+        self.assertEqual((trendline.candle_date, trendline.direction, trendline.alert_level), ("2026-01-18", "向下", "attention"))
+
+    def test_trendline_stops_alerting_after_two_closes_below_it(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _frame([105.0] * 18)
+        frame["td_up"] = 0
+        for column in ("swing_high_3", "swing_low_3", "swing_high_5", "swing_low_5"):
+            frame[column] = False
+        frame.loc[[3, 10], "swing_low_3"] = True
+        frame.loc[3, "最低价"], frame.loc[10, "最低价"] = 90.0, 95.0
+        frame.loc[15, ["开盘价", "最高价", "最低价", "收盘价"]] = [105.0, 106.0, 97.0, 98.0]
+        frame.loc[16, ["开盘价", "最高价", "最低价", "收盘价"]] = [98.0, 104.0, 97.0, 98.0]
+        frame.loc[17, ["开盘价", "最高价", "最低价", "收盘价"]] = [98.0, 104.0, 100.4, 103.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        self.assertFalse(any(event.event_type == "trendline_retest" and event.candle_date == "2026-01-18" for event in events))
+
+    def test_continuous_daily_candles_can_form_bullish_engulfing_at_a_mature_retest(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _breakout_retest_frame()
+        frame.loc[32, ["开盘价", "最高价", "最低价", "收盘价"]] = [103.0, 105.0, 102.0, 104.0]
+        frame.loc[33:34, ["开盘价", "最高价", "最低价", "收盘价"]] = [104.0, 105.0, 103.0, 104.0]
+        frame.loc[35, ["开盘价", "最高价", "最低价", "收盘价"]] = [104.0, 105.0, 101.0, 102.0]
+        frame.loc[36, ["开盘价", "最高价", "最低价", "收盘价"]] = [102.0, 106.0, 100.0, 105.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        current = [event for event in events if event.candle_date == "2026-02-06"]
+        self.assertIn("engulfing", [event.event_type for event in current])
+        self.assertEqual(next(event.alert_level for event in current if event.event_type == "breakout_retest"), "important")
+
+    def test_early_retest_needs_both_high_volume_and_a_long_bullish_body_for_red(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _breakout_retest_frame(days=32)
+        frame.loc[31, ["开盘价", "最高价", "最低价", "收盘价", "成交量"]] = [102.0, 111.0, 100.0, 110.0, 200.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        retest = next(event for event in events if event.event_type == "breakout_retest")
+        self.assertEqual((retest.alert_level, retest.evidence["confirmation"]), ("important", "strong_volume_body"))
+
+        frame.loc[31, "成交量"] = 100.0
+        _, ordinary_events = evaluate_crypto_signals("BTC", frame, config)
+        ordinary = next(event for event in ordinary_events if event.event_type == "breakout_retest")
+        self.assertEqual(ordinary.alert_level, "attention")
+
+    def test_retest_keeps_all_active_main_breakout_levels_with_distinct_event_ids(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _breakout_retest_frame(days=52)
+        frame.loc[40, ["swing_high_5", "最高价"]] = [True, 110.0]
+        frame.loc[50, ["开盘价", "最高价", "最低价", "收盘价"]] = [103.0, 113.0, 102.0, 112.0]
+        frame.loc[51, ["开盘价", "最高价", "最低价", "收盘价"]] = [112.0, 114.0, 100.0, 113.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        same_day = [event for event in events if event.event_type == "breakout_retest" and event.candle_date == "2026-02-21"]
+        self.assertEqual({event.evidence["level"] for event in same_day}, {100.0, 110.0})
+        self.assertEqual(len({event.event_id for event in same_day}), 2)
+
+    def test_breakout_level_expires_after_ninety_calendar_days(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        frame = _breakout_retest_frame(days=122)
+        frame.loc[121, ["开盘价", "最高价", "最低价", "收盘价"]] = [103.0, 105.0, 100.0, 104.0]
+
+        _, events = evaluate_crypto_signals("BTC", frame, config)
+
+        self.assertFalse(any(event.event_type == "breakout_retest" and event.candle_date == "2026-05-02" for event in events))
+
     def test_price_action_severity_does_not_use_future_dow_pivots(self) -> None:
         config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
         frame = _frame([80.0] * 20)
@@ -370,6 +522,24 @@ def _frame(close: list[float]) -> pd.DataFrame:
         "成交额": values * 100,
         "is_complete": [True] * len(values),
     })
+
+
+def _breakout_retest_frame(days: int = 37) -> pd.DataFrame:
+    close = [95.0] * 30 + [102.0] + [103.0] * (days - 31)
+    frame = pd.DataFrame({
+        "日期": pd.date_range("2026-01-01", periods=days, freq="D").strftime("%Y-%m-%d"),
+        "开盘价": [close[0], *close[:-1]],
+        "最高价": [max(open_price, finish) + 1 for open_price, finish in zip([close[0], *close[:-1]], close)],
+        "最低价": [min(open_price, finish) - 1 for open_price, finish in zip([close[0], *close[:-1]], close)],
+        "收盘价": close,
+        "成交量": [100.0] * days,
+    })
+    frame["td_up"] = 0
+    for column in ("swing_high_3", "swing_low_3", "swing_high_5", "swing_low_5"):
+        frame[column] = False
+    frame.loc[10, "swing_high_5"] = True
+    frame.loc[10, "最高价"] = 100.0
+    return frame
 
 
 if __name__ == "__main__":
