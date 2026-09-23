@@ -74,9 +74,17 @@ class CryptoDashboardTableTests(unittest.TestCase):
         self.assertIn("XAUT: backup mismatch", message)
 
     def test_table_always_contains_fixed_five_in_order(self) -> None:
-        table = _crypto_dashboard_table({"symbols": [{"symbol": "ETH", "status": "有变化", "latest_change": "TD9：上涨计数"}]})
+        table = _crypto_dashboard_table({"symbols": [{
+            "symbol": "ETH",
+            "status": "无新变化",
+            "latest_change": "暂无新的策略变化",
+            "latest_change_date": None,
+            "latest_alert_time": None,
+        }]})
         self.assertEqual(table["币种"].tolist(), ["BTC", "ETH", "SOL", "XAUT", "BNB"])
         self.assertEqual(list(table.columns), ["币种", "当前状态", "提醒级别", "最新变化", "信号K线", "提醒时间", "数据截至", "数据质量"])
+        self.assertEqual(table.loc[1, "信号K线"], "-")
+        self.assertEqual(table.loc[1, "提醒时间"], "-")
         self.assertNotIn("买入", " ".join(table["最新变化"].tolist()))
 
     def test_table_can_show_only_symbols_with_changes(self) -> None:

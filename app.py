@@ -921,14 +921,20 @@ def _crypto_dashboard_table(
             "币种": symbol,
             "当前状态": state.get("status", "待检查"),
             "提醒级别": {"important": "重要", "attention": "关注"}.get(level, "-"),
-            "最新变化": state.get("latest_change", "暂无新的策略变化"),
-            "信号K线": state.get("latest_change_date", "-"),
-            "提醒时间": state.get("latest_alert_time", "-"),
-            "数据截至": state.get("data_date", "-"),
-            "数据质量": state.get("quality", "待检查"),
+            "最新变化": _crypto_display_value(state.get("latest_change"), "暂无新的策略变化"),
+            "信号K线": _crypto_display_value(state.get("latest_change_date")),
+            "提醒时间": _crypto_display_value(state.get("latest_alert_time")),
+            "数据截至": _crypto_display_value(state.get("data_date")),
+            "数据质量": _crypto_display_value(state.get("quality"), "待检查"),
         })
     table = pd.DataFrame(rows)
     return table[table["当前状态"] == "有变化"].reset_index(drop=True) if changed_only else table
+
+
+def _crypto_display_value(value: object, fallback: str = "-") -> object:
+    if value is None or pd.isna(value):
+        return fallback
+    return value
 
 
 def _style_crypto_dashboard_table(
