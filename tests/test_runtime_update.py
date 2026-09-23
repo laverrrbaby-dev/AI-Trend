@@ -14,6 +14,18 @@ import app as app_module  # noqa: E402
 
 
 class RuntimeUpdateTests(unittest.TestCase):
+    def test_schedule_runtime_update_waits_for_service_health_before_reloading(self) -> None:
+        with patch.object(app_module, "_embed_hidden_html") as embed:
+            app_module._schedule_runtime_update_refresh()
+
+        html = embed.call_args.args[0]
+        self.assertIn("const probeAfter = 8000", html)
+        self.assertIn("const retryEvery = 2000", html)
+        self.assertIn("const deadline = startedAt + 180000", html)
+        self.assertIn("parentWindow.fetch(parentWindow.location.href", html)
+        self.assertIn("if (response.ok)", html)
+        self.assertIn("parentWindow.location.reload()", html)
+
     def test_open_runtime_update_tells_user_to_refresh_only_after_update_finishes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -29,7 +41,7 @@ class RuntimeUpdateTests(unittest.TestCase):
             with patch.object(app_module.subprocess, "Popen") as popen:
                 message = app_module._open_runtime_update_terminal(runtime_root)
 
-        self.assertEqual(message, "已在终端打开更新任务；请等终端显示更新完成后，再手动刷新页面。")
+        self.assertEqual(message, "更新任务已在终端启动；服务恢复后会自动重新连接页面。")
         command = popen.call_args.args[0]
         self.assertEqual(command[:2], ["/usr/bin/osascript", "-e"])
         self.assertIn(str(update_script), command[2])

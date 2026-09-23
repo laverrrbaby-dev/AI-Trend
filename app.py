@@ -209,6 +209,8 @@ def _render_runtime_update_dialog() -> None:
         if st.button("确认更新并重启", key="runtime-update-confirm", type="primary"):
             message = _open_runtime_update_terminal()
             st.toast(message)
+            if message == "更新任务已在终端启动；服务恢复后会自动重新连接页面。":
+                _schedule_runtime_update_refresh()
     with cancel_column:
         if st.button("取消", key="runtime-update-cancel"):
             st.rerun()
@@ -236,7 +238,47 @@ def _open_runtime_update_terminal(runtime_root: Path = ROOT) -> str:
         subprocess.Popen(["/usr/bin/osascript", "-e", apple_script])
     except OSError:
         return "无法打开终端；请在项目目录运行 scripts/update_local_runtime.sh。"
-    return "已在终端打开更新任务；请等终端显示更新完成后，再手动刷新页面。"
+    return "更新任务已在终端启动；服务恢复后会自动重新连接页面。"
+
+
+def _schedule_runtime_update_refresh() -> None:
+    _embed_hidden_html(
+        """
+        <script>
+        (() => {
+          const parentWindow = window.parent;
+          const startedAt = Date.now();
+          const deadline = startedAt + 180000;
+          const probeAfter = 8000;
+          const retryEvery = 2000;
+
+          const wait = (milliseconds) => new Promise((resolve) => {
+            parentWindow.setTimeout(resolve, milliseconds);
+          });
+
+          const reconnectWhenReady = async () => {
+            await wait(probeAfter);
+            while (Date.now() < deadline) {
+              try {
+                const response = await parentWindow.fetch(parentWindow.location.href, {
+                  cache: "no-store",
+                });
+                if (response.ok) {
+                  parentWindow.location.reload();
+                  return;
+                }
+              } catch (_) {
+                // The service is expected to be unavailable while it restarts.
+              }
+              await wait(retryEvery);
+            }
+          };
+
+          reconnectWhenReady();
+        })();
+        </script>
+        """
+    )
 
 
 def _start_crypto_background_work() -> bool:
