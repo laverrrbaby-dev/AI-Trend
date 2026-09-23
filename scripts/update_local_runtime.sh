@@ -13,10 +13,24 @@ fi
 
 echo "正在停止当前 TrendRadar 服务..."
 launchctl bootout "gui/$USER_ID" "$USER_AGENT" 2>/dev/null || true
-runtime_streamlit_pids="$(pgrep -f "$RUNTIME_ROOT/.venv/bin/python.*streamlit run app.py" || true)"
-if [[ -n "$runtime_streamlit_pids" ]]; then
-  kill $runtime_streamlit_pids
-fi
+listener_pids="$(lsof -nP -tiTCP:8501 -sTCP:LISTEN 2>/dev/null || true)"
+for runtime_pid in $listener_pids; do
+  runtime_cwd="$(lsof -a -p "$runtime_pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+  runtime_command="$(ps -p "$runtime_pid" -o command= 2>/dev/null || true)"
+  if [[ "$runtime_cwd" == "$RUNTIME_ROOT" && "$runtime_command" == *"streamlit run app.py"* ]]; then
+    kill "$runtime_pid"
+    for ((attempt = 0; attempt < 30; attempt++)); do
+      if ! kill -0 "$runtime_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.2
+    done
+    if kill -0 "$runtime_pid" 2>/dev/null; then
+      echo "旧 Streamlit 进程未退出，已停止部署，避免继续使用旧代码。" >&2
+      exit 1
+    fi
+  fi
+done
 
 echo "正在同步最新代码..."
 mkdir -p "$RUNTIME_ROOT"
