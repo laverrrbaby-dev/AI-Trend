@@ -173,8 +173,7 @@ def _add_price_action_events(events: list[CryptoEvent], symbol: str, frame: pd.D
         engulfing = _engulfing_direction(frame, index, config)
         if engulfing:
             direction = "阳线吞没" if engulfing == "bullish" else "阴线吞没"
-            important = _pattern_at_aligned_reference(frame, index, engulfing == "bullish", trend, config)
-            _append_event(events, symbol, "engulfing", direction, frame, index, config, f"价格行为变化：{direction}", "important" if important else "attention")
+            _append_event(events, symbol, "engulfing", direction, frame, index, config, f"价格行为变化：{direction}", "important")
         pin_direction = _pin_bar_direction(frame.iloc[index], config)
         if pin_direction:
             bullish = pin_direction == "bullish"

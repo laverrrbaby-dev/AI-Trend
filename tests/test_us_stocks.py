@@ -39,11 +39,52 @@ from trend_radar.us_stock_news import _fetch_json
 
 
 class UsStocksTests(unittest.TestCase):
+    def test_refresh_rejects_stale_or_undated_quotes_without_writing_target(self) -> None:
+        for as_of in (None, "2026-06-02"):
+            with self.subTest(as_of=as_of), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                def fetch(url, headers, payload):
+                    if url == TRADINGVIEW_SCANNER_URL:
+                        rows = _tradingview_rows()
+                        for row in rows:
+                            row["d"][-1] = int(datetime(2026, 6, 2, 9, 30, tzinfo=NEW_YORK).timestamp())
+                        return {"data": rows}
+                    return {"data": {"rows": _nasdaq_rows(), "asOf": as_of}}
+                result = refresh_us_stock_turnover(root=root, now=datetime(2026, 6, 3, 17, tzinfo=NEW_YORK), fetch_json=fetch)
+                self.assertEqual(result.status, US_REFRESH_FAILED)
+                self.assertFalse((root / "data/us_stocks/top_turnover/2026-06-03.csv").exists())
+
+    def test_unverified_cache_is_refetched_instead_of_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_cached_snapshot(root, "2026-06-03")
+            path = root / "data/us_stocks/top_turnover/2026-06-03.json"
+            metadata = json.loads(path.read_text())
+            metadata.pop("market_date", None)
+            path.write_text(json.dumps(metadata))
+            result = refresh_us_stock_turnover(root=root, now=datetime(2026, 6, 3, 17, tzinfo=NEW_YORK),
+                                              fetch_json=lambda *args: {"data": _tradingview_rows()})
+            self.assertEqual(result.status, US_REFRESH_SUCCEEDED)
+            self.assertEqual(load_us_stock_metadata("2026-06-03", root)["market_date"], "2026-06-03")
+
+    def test_market_http_fetch_uses_system_proxy(self) -> None:
+        from trend_radar.us_stocks import _fetch_json_once
+        response = _mock_urlopen_json({"data": []})
+        with patch("trend_radar.us_stocks._resolve_http_proxy", return_value="http://127.0.0.1:7897", create=True), patch(
+            "trend_radar.us_stocks.urllib.request.build_opener"
+        ) as build:
+            build.return_value.open.return_value = response
+            self.assertEqual(_fetch_json_once("https://example.test", {}, {}, 20), {"data": []})
+            self.assertEqual(build.call_args.args[0].proxies, {"http": "http://127.0.0.1:7897", "https": "http://127.0.0.1:7897"})
+
     def test_missing_news_cache_is_reported_as_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             self.assertIsNone(load_cached_news("AAA", "2026-06-03", root=Path(tempdir)))
 
     def test_news_http_fetch_uses_macos_system_proxy_when_environment_is_unset(self) -> None:
+        from trend_radar.us_stock_news import _macos_http_proxy
+        _macos_http_proxy.cache_clear()
+        self.addCleanup(_macos_http_proxy.cache_clear)
         response = type("Response", (), {
             "__enter__": lambda self: self,
             "__exit__": lambda self, *args: None,
@@ -405,9 +446,10 @@ class UsStocksTests(unittest.TestCase):
                 return _mock_urlopen_json({"data": _tradingview_rows()})
 
             with (
-                patch("trend_radar.us_stocks.urllib.request.urlopen", side_effect=fail_then_succeed),
+                patch("trend_radar.us_stocks.urllib.request.build_opener") as opener,
                 patch("trend_radar.us_stocks.sleep") as sleep_mock,
             ):
+                opener.return_value.open.side_effect = fail_then_succeed
                 frame, metadata = fetch_us_top_turnover(root=root)
 
             self.assertEqual(calls, 2)
@@ -505,6 +547,7 @@ def _tv_row(
             market_cap,
             "USD",
             "United States",
+            int(datetime(2026, 6, 3, 9, 30, tzinfo=NEW_YORK).timestamp()),
         ],
     }
 
@@ -546,7 +589,7 @@ def _write_cached_snapshot(root: Path, data_date: str) -> None:
         ]
     ).to_csv(cache_dir / f"{data_date}.csv", index=False)
     (cache_dir / f"{data_date}.json").write_text(
-        json.dumps({"source": "tradingview", "generated_at": "2026-06-03 08:00:00"}),
+        json.dumps({"source": "tradingview", "generated_at": "2026-06-03 08:00:00", "market_date": data_date}),
         encoding="utf-8",
     )
 

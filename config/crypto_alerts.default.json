@@ -1,6 +1,6 @@
 {
   "preset_id": "default",
-  "algorithm_version": "crypto-alerts-v4",
+  "algorithm_version": "crypto-alerts-v5",
   "timezone": "Asia/Shanghai",
   "symbols": ["BTC", "ETH", "SOL", "XAUT", "BNB"],
   "history_bars": 500,

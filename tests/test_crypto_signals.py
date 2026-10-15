@@ -16,6 +16,18 @@ from trend_radar.crypto_signals import evaluate_crypto_signals  # noqa: E402
 
 
 class CryptoTrendSignalTests(unittest.TestCase):
+    def test_confirmed_engulfing_is_important_without_reference_confluence(self) -> None:
+        config = replace(load_crypto_alert_config(PROJECT_ROOT), enabled_alerts=("price_action",))
+        for prices in ((100, 101, 101, 98), (101, 100, 100, 103)):
+            with self.subTest(prices=prices):
+                frame = _frame([prices[1], prices[3]])
+                frame["开盘价"] = [prices[0], prices[2]]
+                frame["最高价"] = [102, 104]
+                frame["最低价"] = [99, 97]
+                _, events = evaluate_crypto_signals("BTC", frame, config)
+                engulfing = next(event for event in events if event.event_type == "engulfing")
+                self.assertEqual(engulfing.alert_level, "important")
+
     def test_signal_records_the_next_0800_china_alert_time(self) -> None:
         close = [10, 10, 10, 10] + list(range(11, 20))
 

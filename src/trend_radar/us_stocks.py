@@ -19,6 +19,7 @@ import pandas as pd
 
 from .config import PROJECT_ROOT, ensure_data_dirs, now_shanghai
 from .us_stock_anomalies import evaluate_anomalies
+from .us_stock_news import _resolve_http_proxy
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -51,6 +52,7 @@ TRADINGVIEW_COLUMNS = [
     "market_cap_basic",
     "currency",
     "country",
+    "time",
 ]
 TRADINGVIEW_PAYLOAD = {
     "columns": TRADINGVIEW_COLUMNS,
@@ -252,7 +254,7 @@ def refresh_us_stock_turnover(
     cache_csv = _cache_csv_path(root, target_date)
     metadata_json = _metadata_path(root, target_date)
 
-    if cache_csv.exists() and not force:
+    if cache_csv.exists() and not force and load_us_stock_metadata(target_date, root).get("market_date") == target_date:
         cached_frame = load_us_stock_snapshot(target_date, root)
         if "异动等级" not in cached_frame.columns:
             cached_frame = _enrich_us_stock_anomalies(
@@ -289,7 +291,7 @@ def refresh_us_stock_turnover(
     )
 
     try:
-        frame, metadata = fetch_us_top_turnover(root=root, fetch_json=fetch_json)
+        frame, metadata = fetch_us_top_turnover(root=root, fetch_json=fetch_json, target_date=target_date)
     except Exception as exc:  # noqa: BLE001 - external source status must preserve failures for UI
         cached_date = latest_us_stock_cache_date(root)
         if cached_date:
@@ -437,6 +439,7 @@ def fetch_us_top_turnover(
     root: Path = PROJECT_ROOT,
     fetch_json: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]] | None = None,
     limit: int = US_TOP_TURNOVER_LIMIT,
+    target_date: str | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     loader = fetch_json or _fetch_json
     fallback_errors: list[str] = []
@@ -446,6 +449,12 @@ def fetch_us_top_turnover(
     ]:
         try:
             frame, metadata = source_fetcher(root, loader, limit)
+            if target_date is not None:
+                dates = metadata.get("quote_dates", {})
+                invalid = [str(code) for code in frame["代码"] if dates.get(str(code)) != target_date]
+                if invalid:
+                    raise RuntimeError(f"行情日期未通过校验（目标 {target_date}）：{', '.join(invalid)}；拒绝将旧行情标为当日数据")
+                metadata["market_date"] = target_date
         except Exception as exc:  # noqa: BLE001 - each public data source is an optional fallback
             fallback_errors.append(f"{source}: {exc}")
             continue
@@ -466,6 +475,12 @@ def _fetch_tradingview_top_turnover(
     name_map = load_us_name_map(root)
     frame, missing_codes = _normalize_tradingview_rows(rows, name_map, limit)
     metadata = {
+        "quote_dates": {
+            str(item.get("name")): _quote_date(item.get("time"))
+            for row in rows if isinstance(row, dict) and isinstance(row.get("d"), list)
+            for item in [_row_dict(row["d"])]
+            if str(item.get("name")) in set(frame["代码"])
+        },
         "source": "tradingview",
         "provider": "tradingview_scanner_value_traded",
         "input_rows": len(rows) if isinstance(rows, list) else 0,
@@ -485,6 +500,7 @@ def _fetch_nasdaq_top_turnover(
     name_map = load_us_name_map(root)
     frame, missing_codes = _normalize_nasdaq_rows(rows, name_map, limit)
     metadata = {
+        "quote_dates": {str(code): _quote_date((payload.get("data") or {}).get("asOf")) for code in frame["代码"]},
         "source": "nasdaq",
         "provider": "nasdaq_screener_download",
         "input_rows": len(rows),
@@ -493,6 +509,20 @@ def _fetch_nasdaq_top_turnover(
         "turnover_method": "lastsale_x_volume",
     }
     return frame, metadata
+
+
+def _quote_date(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, NEW_YORK).date().isoformat()
+        stamp = pd.Timestamp(value)
+        if pd.isna(stamp):
+            return None
+        return (stamp.tz_convert(NEW_YORK) if stamp.tzinfo else stamp).date().isoformat()
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
 
 
 def _normalize_tradingview_rows(
@@ -666,7 +696,12 @@ def _fetch_json_once(url: str, headers: dict[str, str], payload: dict[str, Any],
     request = urllib.request.Request(url, data=data, headers=headers)
     context = ssl.create_default_context(cafile=certifi.where())
     context.set_alpn_protocols(["http/1.1"])
-    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+    proxy = _resolve_http_proxy()
+    handlers = [urllib.request.HTTPSHandler(context=context)]
+    if proxy:
+        handlers.insert(0, urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    opener = urllib.request.build_opener(*handlers)
+    with opener.open(request, timeout=timeout) as response:
         result = json.loads(response.read().decode("utf-8"))
     if not isinstance(result, dict):
         raise RuntimeError(f"{url} returned non-object JSON")
