@@ -76,6 +76,7 @@ class ChecklistPageTests(unittest.TestCase):
         self.complete(self.page())
         restored = self.page()
         self.assertIn("检查通过", [message.value for message in restored.success])
+        self.assertTrue(any(item.label == "重置当前填写" for item in restored.button))
         restored.button(key="trade-checklist-reset").click().run()
         self.assertFalse(restored.success)
         self.assertTrue(all(widget.value == "" for widget in restored.text_input))

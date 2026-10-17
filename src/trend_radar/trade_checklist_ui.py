@@ -40,7 +40,7 @@ def _reset(root: Path, *, after_trade_save: bool = False) -> None:
         if after_trade_save:
             st.session_state["trade-record-notice"] = f"交易已保存，但检查表未能清空，原输入已保留：{exc}"
         else:
-            st.session_state[PREFIX + "save-error"] = f"新一笔检查未能保存，原输入已保留：{exc}"
+            st.session_state[PREFIX + "save-error"] = f"重置失败，原输入已保留：{exc}"
         return
     for field in FIELDS:
         st.session_state[PREFIX + field] = _initial_value(field, {})
@@ -100,10 +100,10 @@ def render_trade_checklist(root: Path) -> None:
         key = PREFIX + field
         if key not in st.session_state:
             st.session_state[key] = _initial_value(field, st.session_state[PREFIX + "draft"])
-    st.button("新一笔检查", key=PREFIX + "reset", on_click=_reset, args=(root,))
+    st.button("重置当前填写", key=PREFIX + "reset", on_click=_reset, args=(root,))
     if st.session_state[PREFIX + "load-error"]:
         st.error(st.session_state[PREFIX + "load-error"])
-        st.caption("原草稿未被覆盖；处理文件后刷新页面，或点击“新一笔检查”重置。")
+        st.caption("原草稿未被覆盖；处理文件后刷新页面，或点击“重置当前填写”清空当前表单。")
 
     st.subheader("1. 核对账户")
     _text_field("account_balance")

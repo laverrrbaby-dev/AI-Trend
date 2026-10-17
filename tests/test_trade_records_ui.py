@@ -212,7 +212,7 @@ class TradeRecordsPageTests(unittest.TestCase):
         page = self.checklist()
         page.checkbox(key="trade-create-confirmed").check()
         button(page, "保存为进行中交易").click().run()
-        button(page, "新一笔检查").click().run()
+        button(page, "重置当前填写").click().run()
         self.assertFalse(page.exception)
         self.assertEqual(len(self.store.list_records()), 1)
         self.assertFalse(any(item.label == "保存为进行中交易" for item in page.button))
