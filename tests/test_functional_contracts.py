@@ -308,6 +308,31 @@ class FunctionalContractsTests(unittest.TestCase):
         self.assertEqual(columns["市值"]["type_config"]["type"], "text")
         self.assertNotIn("关注", columns)
 
+    def test_us_stock_component_formats_prices_and_changes_without_float_tails(self) -> None:
+        frame = pd.DataFrame([
+            {"代码": code, "名称": code, "最新价": price, "涨跌额": change,
+             "涨跌幅": 0, "成交额": 100, "市值": 1000}
+            for code, price, change in [
+                ("NVDA", 221.3, 221.3 - 228.52),
+                ("AAPL", 342.96, 342.96 - 341.27),
+                ("ZERO", 10, 0),
+                ("MISSING", None, None),
+                ("LITE", 978.535, 0.125),
+            ]
+        ])
+
+        rows = app._build_us_stock_component_rows(app._display_us_stock_table(frame))
+        by_code = {row["代码"]: row for row in rows}
+
+        self.assertEqual(by_code["NVDA"]["涨跌额"], "-7.220")
+        self.assertEqual(by_code["AAPL"]["涨跌额"], "+1.690")
+        self.assertEqual(by_code["ZERO"]["涨跌额"], "+0.000")
+        self.assertEqual(by_code["MISSING"]["涨跌额"], "")
+        self.assertEqual(by_code["MISSING"]["最新价"], "")
+        self.assertEqual(by_code["NVDA"]["最新价"], "221.300")
+        self.assertEqual(by_code["LITE"]["最新价"], "978.535")
+        self.assertEqual(by_code["LITE"]["涨跌额"], "+0.125")
+
     def test_us_stock_interaction_only_toggles_strong_anomalies(self) -> None:
         table = pd.DataFrame(
             [

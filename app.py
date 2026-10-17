@@ -686,6 +686,11 @@ def _build_us_stock_component_rows(
     rows: list[dict[str, str]] = []
     for row in table.to_dict(orient="records"):
         component_row = {column: "" if pd.isna(value) else str(value) for column, value in row.items()}
+        # The HTML component does not apply Streamlit's NumberColumn formats.
+        for column, format_spec in (("最新价", ".3f"), ("涨跌额", "+.3f")):
+            numeric = pd.to_numeric(row.get(column), errors="coerce")
+            if column in row:
+                component_row[column] = "" if pd.isna(numeric) else format(float(numeric), format_spec)
         level = levels.get(component_row.get("代码", ""), "")
         if level == "强异动" and show_strong:
             display_level = level
