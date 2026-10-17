@@ -4,6 +4,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 from datetime import datetime
 from pathlib import Path
 
@@ -242,6 +243,32 @@ class FunctionalContractsTests(unittest.TestCase):
             with self.subTest(column=column):
                 self.assertIn("help", columns[column])
                 self.assertEqual(columns[column]["help"], app.TERM_HELP[column])
+
+    def test_us_stock_auto_refresh_retries_after_cooldown_in_same_session(self) -> None:
+        status = {"status": "failed", "target_date": "2026-06-03", "updated_at": "2026-06-04 08:00:00"}
+        with (
+            patch.object(app.st, "session_state", {}),
+            patch.object(app, "get_available_us_stock_dates", return_value=[]),
+            patch.object(app, "load_us_stock_metadata", return_value={}),
+            patch.object(app, "read_us_stock_refresh_status", return_value=status),
+            patch.object(app, "monotonic", side_effect=[10, 20, 80]),
+            patch.object(app, "_start_us_stock_refresh_thread") as start,
+        ):
+            self.assertTrue(app._start_us_stock_auto_refresh_once("2026-06-03"))
+            self.assertFalse(app._start_us_stock_auto_refresh_once("2026-06-03"))
+            self.assertTrue(app._start_us_stock_auto_refresh_once("2026-06-03"))
+            self.assertEqual(start.call_count, 2)
+
+    def test_us_stock_verified_metadata_does_not_hide_missing_snapshot(self) -> None:
+        with (
+            patch.object(app.st, "session_state", {}),
+            patch.object(app, "get_available_us_stock_dates", return_value=[]),
+            patch.object(app, "load_us_stock_metadata", return_value={"market_date": "2026-06-03"}),
+            patch.object(app, "read_us_stock_refresh_status", return_value={}),
+            patch.object(app, "_start_us_stock_refresh_thread") as start,
+        ):
+            self.assertTrue(app._start_us_stock_auto_refresh_once("2026-06-03"))
+            start.assert_called_once_with(force=False)
 
     def test_us_stock_display_table_matches_requested_fields_and_order(self) -> None:
         frame = pd.DataFrame(

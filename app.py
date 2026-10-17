@@ -10,6 +10,7 @@ from collections.abc import MutableMapping
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 import pandas as pd
@@ -75,6 +76,7 @@ from trend_radar.us_stocks import (  # noqa: E402
     read_us_stock_refresh_status,
     refresh_us_stock_turnover,
     resolve_us_stock_target_date,
+    should_retry_us_stock_refresh,
 )
 from trend_radar.us_stock_anomalies import serialize_anomaly_details  # noqa: E402
 from trend_radar.us_stock_news import load_cached_news, load_or_fetch_news  # noqa: E402
@@ -561,13 +563,19 @@ def _start_retry_selected_thread(data_date: str) -> None:
 
 
 def _start_us_stock_auto_refresh_once(target_date: str) -> bool:
-    if target_date in get_available_us_stock_dates():
+    metadata = load_us_stock_metadata(target_date)
+    has_target = target_date in get_available_us_stock_dates() and metadata.get("market_date") == target_date
+    if has_target and metadata.get("source") == "tradingview":
         return False
-    key = f"us_stock_auto_refresh_started_{target_date}"
-    if st.session_state.get(key):
-        return read_us_stock_refresh_status().get("status") == US_REFRESH_RUNNING
-    st.session_state[key] = True
-    _start_us_stock_refresh_thread(force=False)
+    status = read_us_stock_refresh_status()
+    if not should_retry_us_stock_refresh(status, target_date):
+        return status.get("status") == US_REFRESH_RUNNING
+    key = f"us_stock_auto_refresh_attempt_{target_date}"
+    now = monotonic()
+    if now - st.session_state.get(key, float("-inf")) < 60:
+        return status.get("status") == US_REFRESH_RUNNING
+    st.session_state[key] = now
+    _start_us_stock_refresh_thread(force=has_target)
     return True
 
 
@@ -598,18 +606,28 @@ def _render_us_stock_turnover_page() -> None:
     header_left, header_date, header_status = st.columns([1.5, 0.58, 0.9], vertical_alignment="center")
     with header_left:
         st.title(f"美股成交额Top{US_TOP_TURNOVER_LIMIT}")
-        st.caption("TradingView 直接成交额 | 本地历史快照 | 不含交易建议")
+        st.caption("优先使用直接成交额，备用估算会单独标注 | 本地历史快照")
     with header_date:
         display_date = st.selectbox("数据日期", date_options, index=default_index, key=US_STOCK_DATE_SELECT_KEY)
         snapshot = load_us_stock_snapshot(display_date) if display_date in available_dates else pd.DataFrame()
         metadata = load_us_stock_metadata(display_date) if display_date in available_dates else {}
     with header_status:
         source = str(metadata.get("source") or status.get("source") or "tradingview")
-        source_label = "TradingView" if source == "tradingview" else source
+        source_label = {"tradingview": "TradingView", "nasdaq": "Nasdaq 估算", "yahoo_chart": "Yahoo 备用估算"}.get(source, source)
         generated_at = str(metadata.get("generated_at") or status.get("generated_at") or "-")
         st.metric("数据状态", f"{source_label} {len(snapshot) or '-'}只", f"日期 {display_date} | 生成 {generated_at}")
 
     _render_us_stock_refresh_status(display_date, target_date, force_poll=refresh_started)
+    if metadata.get("source") == "yahoo_chart":
+        candidate_source = "本地近期榜单" if metadata.get("ranking_scope") == "cached_snapshot_candidates" else "Nasdaq 上期高成交额榜单"
+        st.warning(
+            f"备用估算：从{candidate_source}选取的 {metadata.get('candidate_count', '-')} 只候选股中，"
+            f"已核验 {metadata.get('verified_count', '-')} 只的 {display_date} 日线，按收盘价 × 成交量排序。"
+            "范围限于已核验候选股，不代表全市场精确成交额排名；市值暂不展示。"
+            "页面保持打开时每 5 分钟尝试恢复主源。"
+        )
+    elif metadata.get("turnover_method") == "lastsale_x_volume":
+        st.caption("Nasdaq 备用估算：成交额按最新价 × 成交量计算。")
 
     if snapshot.empty:
         st.warning("暂无可展示的美股成交额缓存，正在尝试拉取最新数据。")
@@ -758,11 +776,21 @@ def _apply_pending_us_stock_selected_date(dates: list[str]) -> None:
 
 
 def _render_us_stock_refresh_status(display_date: str, target_date: str, force_poll: bool = False) -> None:
-    should_poll = force_poll or read_us_stock_refresh_status().get("status") == US_REFRESH_RUNNING
+    target_metadata = load_us_stock_metadata(target_date)
+    missing_target = target_date not in get_available_us_stock_dates() or target_metadata.get("market_date") != target_date
+    estimated_target = target_metadata.get("source") in {"yahoo_chart", "nasdaq"}
+    should_poll = missing_target or estimated_target or force_poll or read_us_stock_refresh_status().get("status") == US_REFRESH_RUNNING
     if hasattr(st, "fragment") and should_poll:
+        revision_key = f"us-stock-rendered-revision-{target_date}"
+        st.session_state.setdefault(revision_key, target_metadata.get("generated_at"))
 
         @st.fragment(run_every="5s")
         def _us_stock_refresh_fragment() -> None:
+            _start_us_stock_auto_refresh_once(target_date)
+            revision = load_us_stock_metadata(target_date).get("generated_at")
+            if revision and revision != st.session_state.get(revision_key):
+                st.session_state[revision_key] = revision
+                st.rerun()
             _render_us_stock_refresh_status_panel(display_date, target_date)
 
         _us_stock_refresh_fragment()
@@ -791,6 +819,8 @@ def _render_us_stock_refresh_status_panel(display_date: str, target_date: str) -
         updated_at = str(status.get("updated_at") or "").strip()
         if updated_at:
             st.caption(f"最近更新 {updated_at}")
+        if status_name == US_REFRESH_FAILED and display_date != target_date:
+            st.caption(f"数据尚未更新到 {target_date}；页面保持打开时每 60 秒自动重试。")
     with latest_col:
         if target_date in get_available_us_stock_dates() and display_date != target_date:
             if st.button("刷新到最新数据", key="refresh-us-stock-to-latest", use_container_width=True):

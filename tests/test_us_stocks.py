@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,135 @@ from trend_radar.us_stock_news import _fetch_json
 
 
 class UsStocksTests(unittest.TestCase):
+    def test_stale_nasdaq_fallback_rebuilds_values_from_dated_yahoo_candles(self) -> None:
+        def fetch(url, headers, payload):
+            if url == TRADINGVIEW_SCANNER_URL:
+                raise TimeoutError("primary unavailable")
+            if url == NASDAQ_SCREENER_URL:
+                return {"data": {"rows": [
+                    _nasdaq_row("MU", "Micron Common Stock", "$999", "1", "1%", "1000", "999999"),
+                    _nasdaq_row("NVDA", "Nvidia Common Stock", "$888", "1", "1%", "900", "888888"),
+                ], "asOf": None}}
+            close, volume = (12, 100) if '/MU?' in url else (20, 200)
+            return {"chart": {"result": [{
+                "timestamp": [int(datetime(2026, 6, day, 9, 30, tzinfo=NEW_YORK).timestamp()) for day in (2, 3)],
+                "indicators": {"quote": [{"close": [10, close], "volume": [90, volume]}]},
+            }]}}
+
+        with tempfile.TemporaryDirectory() as directory:
+            frame, metadata = fetch_us_top_turnover(root=Path(directory), fetch_json=fetch, limit=2, target_date="2026-06-03")
+        self.assertEqual(metadata["source"], "yahoo_chart")
+        self.assertEqual(metadata["market_date"], "2026-06-03")
+        self.assertEqual(metadata["quote_dates"], {"MU": "2026-06-03", "NVDA": "2026-06-03"})
+        self.assertEqual(metadata["candidate_count"], 2)
+        self.assertEqual(metadata["verified_count"], 2)
+        self.assertEqual(metadata["turnover_method"], "close_x_volume")
+        self.assertEqual(frame["代码"].tolist(), ["NVDA", "MU"])
+        self.assertEqual(frame["最新价"].tolist(), [20.0, 12.0])
+        self.assertEqual(frame["成交额"].tolist(), [4000.0, 1200.0])
+        self.assertEqual(frame["涨跌额"].tolist(), [10.0, 2.0])
+        self.assertAlmostEqual(frame.iloc[0]["涨跌幅"], 100.0)
+        self.assertAlmostEqual(frame.iloc[1]["涨跌幅"], 20.0)
+        self.assertTrue(frame["市值"].isna().all())
+
+    def test_refresh_retry_waits_then_recovers_and_detects_abandoned_jobs(self) -> None:
+        from trend_radar.us_stocks import should_retry_us_stock_refresh
+        now = datetime(2026, 6, 4, 8, 2)
+        failed = {"status": "failed", "target_date": "2026-06-03", "updated_at": "2026-06-04 08:00:00"}
+        self.assertTrue(should_retry_us_stock_refresh(failed, "2026-06-03", now))
+        self.assertFalse(should_retry_us_stock_refresh({**failed, "updated_at": "2026-06-04 08:01:50"}, "2026-06-03", now))
+        running = {**failed, "status": "running"}
+        self.assertFalse(should_retry_us_stock_refresh(running, "2026-06-03", now))
+        self.assertTrue(should_retry_us_stock_refresh({**running, "updated_at": "2026-06-04 07:00:00"}, "2026-06-03", now))
+        self.assertTrue(should_retry_us_stock_refresh(running, "2026-06-04", now))
+        estimated = {**failed, "status": "succeeded", "source": "yahoo_chart"}
+        self.assertFalse(should_retry_us_stock_refresh(estimated, "2026-06-03", now))
+        self.assertTrue(should_retry_us_stock_refresh({**estimated, "updated_at": "2026-06-04 07:50:00"}, "2026-06-03", now))
+
+    def test_failed_primary_recheck_does_not_replace_verified_direct_cache_with_estimate(self) -> None:
+        def fetch(url, headers, payload):
+            if url == TRADINGVIEW_SCANNER_URL:
+                raise TimeoutError("primary unavailable")
+            return {"data": {"rows": _nasdaq_rows(), "asOf": "2026-06-03"}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_cached_snapshot(root, "2026-06-03")
+            path = root / "data/us_stocks/top_turnover/2026-06-03.csv"
+            original = path.read_bytes()
+            result = refresh_us_stock_turnover(root=root, force=True, now=datetime(2026, 6, 3, 17, tzinfo=NEW_YORK), fetch_json=fetch)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(result.source, "tradingview")
+            self.assertEqual(result.status, US_REFRESH_SKIPPED)
+
+    def test_yahoo_fallback_excludes_stale_quotes_and_reports_incomplete_coverage(self) -> None:
+        def fetch(url, headers, payload):
+            if url == TRADINGVIEW_SCANNER_URL:
+                raise TimeoutError("primary unavailable")
+            if url == NASDAQ_SCREENER_URL:
+                return {"data": {"rows": [
+                    _nasdaq_row(code, f"{code} Common Stock", "$999", "1", "1%", "1000", "999999")
+                    for code in ("MU", "NVDA")
+                ]}}
+            days = (2, 3) if '/MU?' in url else (1, 2)
+            return {"chart": {"result": [{
+                "timestamp": [int(datetime(2026, 6, day, 9, 30, tzinfo=NEW_YORK).timestamp()) for day in days],
+                "indicators": {"quote": [{"close": [10, 12], "volume": [90, 100]}]},
+            }]}}
+        with tempfile.TemporaryDirectory() as directory:
+            kwargs = {"root": Path(directory), "fetch_json": fetch, "target_date": "2026-06-03"}
+            frame, metadata = fetch_us_top_turnover(**kwargs, limit=1)
+            self.assertEqual(frame["代码"].tolist(), ["MU"])
+            self.assertEqual(metadata["verified_count"], 1)
+            self.assertEqual(metadata["candidate_count"], 2)
+            self.assertIn("NVDA", metadata["candidate_errors"][0])
+            with self.assertRaisesRegex(RuntimeError, "Only 1 date-verified Yahoo"):
+                fetch_us_top_turnover(**kwargs, limit=2)
+
+    def test_both_scanners_down_uses_cached_symbols_with_fresh_yahoo_quotes(self) -> None:
+        def fetch(url, headers, payload):
+            if url == TRADINGVIEW_SCANNER_URL or (url == NASDAQ_SCREENER_URL and scanner_payload is None):
+                raise TimeoutError("scanner unavailable")
+            if url == NASDAQ_SCREENER_URL:
+                return scanner_payload
+            return {"chart": {"result": [{
+                "timestamp": [int(datetime(2026, 6, day, 9, 30, tzinfo=NEW_YORK).timestamp()) for day in (2, 3)],
+                "indicators": {"quote": [{"close": [10, 12], "volume": [90, 100]}]},
+            }]}}
+        for scanner_payload in (None, {"data": None}, {"data": {"rows": []}}):
+            with self.subTest(payload=scanner_payload), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                _write_cached_snapshot(root, "2026-06-02")
+                frame, metadata = fetch_us_top_turnover(root=root, fetch_json=fetch, limit=1, target_date="2026-06-03")
+                self.assertEqual(metadata["source"], "yahoo_chart")
+                self.assertEqual(metadata["ranking_scope"], "cached_snapshot_candidates")
+                self.assertEqual(set(metadata["quote_dates"].values()), {"2026-06-03"})
+                self.assertEqual(metadata["verified_count"], 30)
+                self.assertEqual(frame.iloc[0]["最新价"], 12)
+
+    def test_concurrent_refresh_does_not_duplicate_provider_requests(self) -> None:
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+        results = []
+        def fetch(url, headers, payload):
+            calls.append(url)
+            entered.set()
+            release.wait(5)
+            return {"data": _tradingview_rows()}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            kwargs = {"root": root, "now": datetime(2026, 6, 3, 17, tzinfo=NEW_YORK), "fetch_json": fetch}
+            thread = threading.Thread(target=lambda: results.append(refresh_us_stock_turnover(**kwargs)))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                second = refresh_us_stock_turnover(**kwargs)
+                self.assertEqual(second.status, "running")
+                self.assertEqual(len(calls), 1)
+            finally:
+                release.set()
+                thread.join(6)
+            self.assertEqual(results[0].status, US_REFRESH_SUCCEEDED)
+
     def test_refresh_rejects_stale_or_undated_quotes_without_writing_target(self) -> None:
         for as_of in (None, "2026-06-02"):
             with self.subTest(as_of=as_of), tempfile.TemporaryDirectory() as directory:
@@ -419,7 +549,9 @@ class UsStocksTests(unittest.TestCase):
             self.assertEqual(result.status, US_REFRESH_FAILED)
             self.assertEqual(result.actual_date, "2026-06-02")
             self.assertEqual(latest_us_stock_cache_date(root), "2026-06-02")
-            self.assertEqual(calls, [TRADINGVIEW_SCANNER_URL, NASDAQ_SCREENER_URL])
+            self.assertEqual(calls[:2], [TRADINGVIEW_SCANNER_URL, NASDAQ_SCREENER_URL])
+            self.assertEqual(len(calls[2:]), US_TOP_TURNOVER_LIMIT)
+            self.assertTrue(all(url.startswith("https://query1.finance.yahoo.com/v8/finance/chart/") for url in calls[2:]))
             self.assertIn("继续展示 2026-06-02 缓存", result.message or "")
 
     def test_missing_direct_turnover_does_not_generate_wrong_ranking(self) -> None:

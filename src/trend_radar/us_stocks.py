@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import ssl
+import threading
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -36,6 +38,11 @@ TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
 NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=8000&offset=0&download=true"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=3mo&interval=1d&events=div%2Csplits"
 US_TOP_TURNOVER_LIMIT = 30
+US_FALLBACK_CANDIDATE_LIMIT = 150
+US_REFRESH_RETRY_SECONDS = 60
+US_PRIMARY_RECOVERY_SECONDS = 300
+US_REFRESH_STALE_SECONDS = 900
+_US_REFRESH_LOCK = threading.Lock()
 US_NAME_MAP_FILE = "name_map.csv"
 US_STOCK_COLUMNS = ["代码", "名称", "英文名称", "最新价", "涨跌幅", "涨跌额", "成交额", "市值"]
 
@@ -247,6 +254,37 @@ def refresh_us_stock_turnover(
     fetch_json: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]] | None = None,
     history_fetch_json: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]] | None = None,
 ) -> UsStockRefreshResult:
+    if not _US_REFRESH_LOCK.acquire(blocking=False):
+        return UsStockRefreshResult(status=US_REFRESH_RUNNING, target_date=resolve_us_stock_target_date(now))
+    try:
+        return _refresh_us_stock_turnover(root, force, now, fetch_json, history_fetch_json)
+    finally:
+        _US_REFRESH_LOCK.release()
+
+
+def should_retry_us_stock_refresh(status: dict[str, Any], target_date: str, now: datetime | None = None) -> bool:
+    if status.get("target_date") != target_date:
+        return True
+    current = now or now_shanghai()
+    try:
+        updated = datetime.strptime(str(status.get("updated_at") or ""), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return True
+    if current.tzinfo is not None:
+        current = current.astimezone(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    delay = US_REFRESH_STALE_SECONDS if status.get("status") == US_REFRESH_RUNNING else US_REFRESH_RETRY_SECONDS
+    if status.get("status") in {US_REFRESH_SUCCEEDED, US_REFRESH_SKIPPED} and status.get("source") in {"yahoo_chart", "nasdaq"}:
+        delay = US_PRIMARY_RECOVERY_SECONDS
+    return (current - updated).total_seconds() >= delay
+
+
+def _refresh_us_stock_turnover(
+    root: Path,
+    force: bool,
+    now: datetime | None,
+    fetch_json: Callable | None,
+    history_fetch_json: Callable | None,
+) -> UsStockRefreshResult:
     target_date = resolve_us_stock_target_date(now)
     ensure_data_dirs(root)
     _ensure_us_stock_dirs(root)
@@ -321,6 +359,19 @@ def refresh_us_stock_turnover(
             updated_at=_timestamp(),
             error=str(exc),
             message=f"{target_date} 美股成交额更新失败",
+        )
+        _write_status(root, result)
+        return result
+
+    existing_metadata = load_us_stock_metadata(target_date, root)
+    if cache_csv.exists() and existing_metadata.get("market_date") == target_date and existing_metadata.get("source") == "tradingview" and metadata.get("source") != "tradingview":
+        result = UsStockRefreshResult(
+            status=US_REFRESH_SKIPPED, target_date=target_date, actual_date=target_date,
+            started_at=started_at, finished_at=_timestamp(), updated_at=_timestamp(),
+            generated_at=existing_metadata.get("generated_at"), cache_csv=cache_csv, metadata_json=metadata_json,
+            source="tradingview", row_count=len(load_us_stock_snapshot(target_date, root)),
+            message=f"主源暂不可用，保留 {target_date} 已验证的直接成交额数据，未以备用估算覆盖",
+            error="; ".join(metadata.get("fallback_errors", [])),
         )
         _write_status(root, result)
         return result
@@ -448,7 +499,10 @@ def fetch_us_top_turnover(
         ("nasdaq", _fetch_nasdaq_top_turnover),
     ]:
         try:
-            frame, metadata = source_fetcher(root, loader, limit)
+            if source == "nasdaq":
+                frame, metadata = source_fetcher(root, loader, limit, target_date=target_date)
+            else:
+                frame, metadata = source_fetcher(root, loader, limit)
             if target_date is not None:
                 dates = metadata.get("quote_dates", {})
                 invalid = [str(code) for code in frame["代码"] if dates.get(str(code)) != target_date]
@@ -461,6 +515,8 @@ def fetch_us_top_turnover(
         if fallback_errors:
             metadata["fallback_errors"] = fallback_errors
         metadata["attempted_sources"] = [*[_source_name(error) for error in fallback_errors], source]
+        if metadata["source"] != source:
+            metadata["attempted_sources"].append(metadata["source"])
         return frame, metadata
     raise RuntimeError(f"All US stock turnover sources failed: {'; '.join(fallback_errors)}")
 
@@ -494,13 +550,32 @@ def _fetch_nasdaq_top_turnover(
     root: Path,
     loader: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]],
     limit: int,
+    target_date: str | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    payload = loader(NASDAQ_SCREENER_URL, _NASDAQ_HEADERS, {})
-    rows = _extract_nasdaq_rows(payload)
-    name_map = load_us_name_map(root)
-    frame, missing_codes = _normalize_nasdaq_rows(rows, name_map, limit)
+    try:
+        payload = loader(NASDAQ_SCREENER_URL, _NASDAQ_HEADERS, {})
+        rows = _extract_nasdaq_rows(payload)
+        name_map = load_us_name_map(root)
+        candidates, missing_codes = _normalize_nasdaq_rows(rows, name_map, None)
+        if len(candidates) < limit:
+            raise RuntimeError(f"Only {len(candidates)} Nasdaq computed US stock turnover rows were available")
+    except Exception:
+        # Yahoo must remain usable when neither scanner is reachable.
+        frames = [load_us_stock_snapshot(date, root) for date in get_available_us_stock_dates(root)[-5:][::-1]]
+        candidates = pd.concat(frames, ignore_index=True).drop_duplicates("代码") if frames else pd.DataFrame()
+        if target_date is None or len(candidates) < limit:
+            raise
+        frame, metadata = _fetch_yahoo_candidate_turnover(candidates, loader, limit, target_date, "cached_snapshot_candidates")
+        metadata["fallback_reason"] = "Nasdaq 不可用；仅复用本地快照的股票代码，行情已从 Yahoo 重新获取"
+        return frame, metadata
+    data = payload.get("data")
+    as_of = _quote_date(data.get("asOf")) if isinstance(data, dict) else None
+    if target_date is not None and as_of != target_date:
+        return _fetch_yahoo_candidate_turnover(candidates, loader, limit, target_date, "nasdaq_turnover_candidates")
+    frame = candidates.head(limit).reset_index(drop=True)
+    missing_codes = [code for code in missing_codes if code in set(frame["代码"])]
     metadata = {
-        "quote_dates": {str(code): _quote_date((payload.get("data") or {}).get("asOf")) for code in frame["代码"]},
+        "quote_dates": {str(code): as_of for code in frame["代码"]},
         "source": "nasdaq",
         "provider": "nasdaq_screener_download",
         "input_rows": len(rows),
@@ -509,6 +584,54 @@ def _fetch_nasdaq_top_turnover(
         "turnover_method": "lastsale_x_volume",
     }
     return frame, metadata
+
+
+def _fetch_yahoo_candidate_turnover(
+    candidates: pd.DataFrame,
+    loader: Callable,
+    limit: int,
+    target_date: str,
+    ranking_scope: str,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    # Nasdaq supplies candidates only. Its undated prices and volumes are never reused.
+    candidates = candidates.head(US_FALLBACK_CANDIDATE_LIMIT)
+
+    def load_candidate(row: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+        symbol = str(row["代码"])
+        try:
+            # Bound each independent request so one unavailable symbol cannot stall recovery.
+            history_loader = loader
+            if loader is _fetch_json:
+                history_loader = lambda url, headers, payload: _fetch_json(url, headers, payload, timeout=8, retries=1)
+            history = _fetch_yahoo_stock_history(symbol.replace(".", "-"), history_loader)
+            history = history.sort_values("日期").drop_duplicates("日期")
+            if len(history) < 2 or history.iloc[-1]["日期"] != target_date:
+                raise RuntimeError("缺少目标日期完整日线")
+            latest, previous = history.iloc[-1], history.iloc[-2]
+            close, volume, previous_close = float(latest["收盘价"]), float(latest["成交量"]), float(previous["收盘价"])
+            if not all(pd.notna(value) and 0 < value < float("inf") for value in (close, volume, previous_close)):
+                raise RuntimeError("日线价格或成交量无效")
+            return {
+                **row, "最新价": close, "涨跌额": close - previous_close,
+                "涨跌幅": (close / previous_close - 1) * 100,
+                "成交额": close * volume, "市值": float("nan"),
+            }, None
+        except Exception as exc:  # noqa: BLE001 - preserve partial coverage explicitly in metadata
+            return None, f"{symbol}: {exc}"
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        results = list(pool.map(load_candidate, candidates.to_dict(orient="records")))
+    verified = [row for row, error in results if row is not None]
+    errors = [error for row, error in results if error is not None]
+    frame = _top_turnover_frame(verified, limit, "date-verified Yahoo candidate")
+    return frame, {
+        "source": "yahoo_chart", "provider": "yahoo_chart_nasdaq_candidates",
+        "quote_dates": {str(row["代码"]): target_date for row in verified},
+        "turnover_method": "close_x_volume", "ranking_scope": ranking_scope,
+        "candidate_count": len(candidates), "verified_count": len(verified),
+        "candidate_errors": errors,
+        "fallback_reason": "Nasdaq 行情日期缺失或过期，已用 Yahoo 日线重新计算；成交额为收盘价乘成交量的估算值",
+    }
 
 
 def _quote_date(value: Any) -> str | None:
@@ -576,7 +699,7 @@ def _extract_nasdaq_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def _normalize_nasdaq_rows(rows: list[dict[str, Any]], name_map: dict[str, str], limit: int) -> tuple[pd.DataFrame, list[str]]:
+def _normalize_nasdaq_rows(rows: list[dict[str, Any]], name_map: dict[str, str], limit: int | None) -> tuple[pd.DataFrame, list[str]]:
     records: list[dict[str, Any]] = []
     missing_codes: list[str] = []
     for row in rows:
@@ -613,12 +736,13 @@ def _row_dict(values: list[Any]) -> dict[str, Any]:
     return {column: values[index] if index < len(values) else None for index, column in enumerate(TRADINGVIEW_COLUMNS)}
 
 
-def _top_turnover_frame(records: list[dict[str, Any]], limit: int, source_label: str) -> pd.DataFrame:
+def _top_turnover_frame(records: list[dict[str, Any]], limit: int | None, source_label: str) -> pd.DataFrame:
     frame = pd.DataFrame(records)
     if frame.empty:
         raise RuntimeError(f"No {source_label} turnover rows were available")
-    frame = frame[US_STOCK_COLUMNS].sort_values("成交额", ascending=False).head(limit).reset_index(drop=True)
-    if len(frame) < limit:
+    frame = frame[US_STOCK_COLUMNS].sort_values("成交额", ascending=False)
+    frame = (frame.head(limit) if limit is not None else frame).reset_index(drop=True)
+    if limit is not None and len(frame) < limit:
         raise RuntimeError(f"Only {len(frame)} {source_label} turnover rows were available")
     return frame
 
