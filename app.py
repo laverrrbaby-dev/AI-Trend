@@ -94,6 +94,7 @@ from trend_radar.crypto_alert_config import (  # noqa: E402
 from trend_radar.crypto_indicators import calculate_indicators  # noqa: E402
 from trend_radar.crypto_market_data import load_crypto_history  # noqa: E402
 from trend_radar.trade_checklist_ui import render_trade_checklist  # noqa: E402
+from trend_radar.trade_records_ui import render_trade_records  # noqa: E402
 
 
 STATUS_ORDER = ["强趋势", "趋势向上", "转强观察", "震荡观察", "弱观察", "数据不足"]
@@ -187,6 +188,7 @@ def main() -> None:
     if market == "币圈现货":
         _render_crypto_turnover_page()
     else:
+        st.session_state.pop("crypto-page-last-section", None)
         _render_us_stock_turnover_page()
 
 
@@ -840,9 +842,13 @@ def _start_crypto_refresh_thread(force: bool) -> None:
 
 
 def _render_crypto_turnover_page() -> None:
-    section = st.radio("币圈功能", ["行情提醒", "交易前检查"], horizontal=True, key="crypto-page-section")
+    section = st.radio("币圈功能", ["行情提醒", "交易前检查", "交易记录"], horizontal=True, key="crypto-page-section")
+    entered = st.session_state.get("crypto-page-last-section") != section
+    st.session_state["crypto-page-last-section"] = section
     if section == "交易前检查":
         render_trade_checklist(ROOT)
+    elif section == "交易记录":
+        render_trade_records(ROOT, refresh=entered)
     else:
         _render_crypto_alert_dashboard()
 

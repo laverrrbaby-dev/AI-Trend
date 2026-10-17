@@ -17,6 +17,7 @@ from .trade_checklist import (
     load_checklist_draft,
     save_checklist_draft,
 )
+from .trade_records_ui import render_trade_save
 
 PREFIX = "trade-checklist-"
 FIELDS = (*NUMBER_LABELS, *TEXT_LABELS, "direction", "trade_type", *CHECK_LABELS)
@@ -151,6 +152,7 @@ def render_trade_checklist(root: Path) -> None:
     st.caption("按价格距离计算，未扣手续费及资金费。门槛按未舍入值判断。")
     if result.passed and not save_error and not st.session_state[PREFIX + "load-error"]:
         st.success("检查通过")
+        render_trade_save(root, draft)
     else:
         st.warning("检查未通过")
         for error in result.errors:

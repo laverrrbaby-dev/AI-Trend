@@ -32,14 +32,16 @@ class ChecklistPageTests(unittest.TestCase):
     def complete(self, page: AppTest) -> AppTest:
         values = valid_draft()
         for widget in page.text_input:
-            widget.set_value(values[widget.key.removeprefix("trade-checklist-")])
+            if widget.key.startswith("trade-checklist-"):
+                widget.set_value(values[widget.key.removeprefix("trade-checklist-")])
         for widget in page.text_area:
             widget.set_value(values[widget.key.removeprefix("trade-checklist-")])
         for widget in page.selectbox:
             widget.select(values[widget.key.removeprefix("trade-checklist-")])
         page.run()
         for checkbox in page.checkbox:
-            checkbox.check()
+            if checkbox.key.startswith("trade-checklist-"):
+                checkbox.check()
         return page.run()
 
     def test_valid_plan_requires_every_manual_check_before_passing(self) -> None:
@@ -156,6 +158,12 @@ class ChecklistPageTests(unittest.TestCase):
         self.assertIn("交易前检查", [title.value for title in page.title])
         self.complete(page)
         page.radio(key="crypto-page-section").set_value("行情提醒").run()
+        page.radio(key="crypto-page-section").set_value("交易记录").run()
+        self.assertFalse(page.exception)
+        self.assertIn("交易记录", [title.value for title in page.title])
+        self.assertTrue(any("暂无进行中交易" in item.value for item in page.info))
+        page.radio(key="trade-records-status").set_value("已结束").run()
+        self.assertTrue(any("暂无已结束交易" in item.value for item in page.info))
         page.radio(key="crypto-page-section").set_value("交易前检查").run()
         self.assertIn("检查通过", [message.value for message in page.success])
 
