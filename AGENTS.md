@@ -2,6 +2,12 @@
 
 These instructions apply to the whole repository.
 
+## Trading day boundaries
+
+- The user's current trading convention uses UTC+08:00 (Asia/Shanghai) daily candles: each trading day runs from 00:00 inclusive to the next 00:00 exclusive in Beijing time.
+- Trading checklists, trade records, and trailing-stop suggestions that refer to yesterday or the previous daily candle must use the most recently completed UTC+08:00 daily candle. Do not substitute a UTC daily candle that closes at 08:00 Beijing time.
+- Verify the candle source's actual boundaries before reusing market data; displaying UTC candles in a UTC+08:00 timezone does not change their boundaries.
+
 ## Runtime deployment and synchronization
 
 - The canonical source directory is this Git worktree. The live macOS service runs from the deployed copy at `~/Library/Application Support/TrendRadar`; do not assume that changing files here changes the page currently served at `trend.test`.
