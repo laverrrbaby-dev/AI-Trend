@@ -48,8 +48,11 @@ class TradeRecordsPageTests(unittest.TestCase):
         self.assertFalse(page.exception)
         self.assertEqual(self.store.list_records()[0].execution["entry_price"], "101")
         self.assertEqual(self.store.list_records()[0].snapshot["entry_price"], "100")
-        self.assertTrue(button(page, "保存为进行中交易").disabled)
-        self.assertEqual(load_checklist_draft(self.root)["entry_price"], "100")
+        self.assertFalse(any(item.label == "保存为进行中交易" for item in page.button))
+        self.assertFalse(any(load_checklist_draft(self.root).values()))
+        self.assertEqual(page.text_input(key="trade-checklist-account_balance").value, "")
+        self.assertEqual(page.text_input(key="trade-checklist-entry_price").value, "")
+        self.assertFalse(page.checkbox(key="trade-checklist-previous_position_closed").value)
 
     def records(self, *, unavailable: bool = False) -> AppTest:
         return AppTest.from_string(

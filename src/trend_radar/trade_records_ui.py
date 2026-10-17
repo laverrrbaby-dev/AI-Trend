@@ -25,7 +25,12 @@ def _execution_fields(prefix: str, values: dict[str, str]) -> dict[str, str]:
     return result
 
 
-def render_trade_save(root: Path, draft: dict[str, Any]) -> None:
+def render_trade_save(
+    root: Path,
+    draft: dict[str, Any],
+    *,
+    on_success: Callable[[], None] | None = None,
+) -> None:
     st.subheader("5. 实际成交后保存交易")
     store = TradeRecordStore(root)
     try:
@@ -49,6 +54,8 @@ def render_trade_save(root: Path, draft: dict[str, Any]) -> None:
             st.error(f"交易未保存，输入已保留：{exc}")
         else:
             st.session_state["trade-record-notice"] = "交易已保存，请到“交易记录”查看。"
+            if on_success is not None:
+                on_success()
             st.rerun()
 
 

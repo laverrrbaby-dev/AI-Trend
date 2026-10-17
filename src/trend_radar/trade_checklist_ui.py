@@ -33,18 +33,29 @@ def _retry_save() -> None:
     st.session_state[PREFIX + "saved"] = None
 
 
-def _reset(root: Path) -> None:
+def _reset(root: Path, *, after_trade_save: bool = False) -> None:
     try:
         save_checklist_draft(root, {})
     except (OSError, ValueError) as exc:
-        st.session_state[PREFIX + "save-error"] = f"新一笔检查未能保存，原输入已保留：{exc}"
+        if after_trade_save:
+            st.session_state["trade-record-notice"] = f"交易已保存，但检查表未能清空，原输入已保留：{exc}"
+        else:
+            st.session_state[PREFIX + "save-error"] = f"新一笔检查未能保存，原输入已保留：{exc}"
         return
     for field in FIELDS:
         st.session_state[PREFIX + field] = _initial_value(field, {})
+    for field in ("instrument_id", "entry_price", "quantity", "opened_at", "confirmed"):
+        st.session_state.pop("trade-create-" + field, None)
     st.session_state[PREFIX + "draft"] = {}
     st.session_state[PREFIX + "saved"] = {}
     st.session_state[PREFIX + "load-error"] = ""
     st.session_state[PREFIX + "save-error"] = ""
+    if after_trade_save:
+        st.session_state["trade-record-notice"] = "交易已保存，请到“交易记录”查看；交易前检查表已清空。"
+
+
+def _schedule_reset_after_trade_save() -> None:
+    st.session_state[PREFIX + "clear-after-trade-save"] = True
 
 
 def _initial_value(field: str, draft: dict) -> str | bool | None:
@@ -69,6 +80,8 @@ def _number_display(value: Decimal | None) -> str:
 
 
 def render_trade_checklist(root: Path) -> None:
+    if st.session_state.pop(PREFIX + "clear-after-trade-save", False):
+        _reset(root, after_trade_save=True)
     st.title("交易前检查")
     st.caption("OKX · 全仓 · 每笔固定 500U · 初始退出采用强平机制")
     st.info("先完成检查，再到 OKX 下单。预估强平价是检查时的预估值，不代表保证成交价格。")
@@ -152,7 +165,7 @@ def render_trade_checklist(root: Path) -> None:
     st.caption("按价格距离计算，未扣手续费及资金费。门槛按未舍入值判断。")
     if result.passed and not save_error and not st.session_state[PREFIX + "load-error"]:
         st.success("检查通过")
-        render_trade_save(root, draft)
+        render_trade_save(root, draft, on_success=_schedule_reset_after_trade_save)
     else:
         st.warning("检查未通过")
         for error in result.errors:
