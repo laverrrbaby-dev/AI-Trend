@@ -93,6 +93,7 @@ from trend_radar.crypto_alert_config import (  # noqa: E402
 )
 from trend_radar.crypto_indicators import calculate_indicators  # noqa: E402
 from trend_radar.crypto_market_data import load_crypto_history  # noqa: E402
+from trend_radar.trade_checklist_ui import render_trade_checklist  # noqa: E402
 
 
 STATUS_ORDER = ["强趋势", "趋势向上", "转强观察", "震荡观察", "弱观察", "数据不足"]
@@ -839,7 +840,11 @@ def _start_crypto_refresh_thread(force: bool) -> None:
 
 
 def _render_crypto_turnover_page() -> None:
-    _render_crypto_alert_dashboard()
+    section = st.radio("币圈功能", ["行情提醒", "交易前检查"], horizontal=True, key="crypto-page-section")
+    if section == "交易前检查":
+        render_trade_checklist(ROOT)
+    else:
+        _render_crypto_alert_dashboard()
 
 
 def _render_crypto_alert_dashboard() -> None:
