@@ -109,3 +109,4 @@ streamlit run app.py
 币圈提醒数据写入 `data/crypto/alerts/`，默认配置为 `config/crypto_alerts.default.json`，可通过命名预设调整启用的提醒族和指标窗口。提醒只描述道氏结构、价格行为、MACD/RSI/OBV 背离、TD9/TD13、MA120 与 Vegas 通道的变化，不提供买卖或入场建议。
 
 后续可继续补自动调度、更多数据源交叉校验和通知。
+# AI-Trend
