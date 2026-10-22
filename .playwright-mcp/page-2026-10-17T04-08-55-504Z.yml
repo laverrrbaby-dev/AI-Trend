@@ -1,0 +1,96 @@
+- generic:
+  - generic [ref=e899]:
+    - log
+    - log
+  - generic [ref=e3]:
+    - banner [ref=e6]:
+      - button "Main menu" [ref=e2528] [cursor=pointer]
+    - generic [ref=e15]:
+      - button [ref=e2529] [cursor=pointer]:
+        - generic "更新并重启服务" [ref=e2530]:
+          - paragraph [ref=e30]: 更新并重启服务
+      - generic [ref=e32]:
+        - paragraph [ref=e36]: 市场
+        - radiogroup "市场" [ref=e2531]:
+          - radio [ref=e2532] [cursor=pointer]:
+            - paragraph [ref=e43]: 美股
+          - radio [checked] [ref=e2533] [cursor=pointer]:
+            - paragraph [ref=e49]: 币圈现货
+      - generic [ref=e161]:
+        - paragraph [ref=e165]: 币圈功能
+        - radiogroup "币圈功能" [ref=e2534]:
+          - generic [ref=e167] [cursor=pointer]:
+            - radio "行情提醒" [ref=e2535]
+            - paragraph [ref=e175]: 行情提醒
+          - generic [ref=e176] [cursor=pointer]:
+            - radio "交易前检查" [ref=e2536]
+            - paragraph [ref=e184]: 交易前检查
+          - generic [ref=e185] [cursor=pointer]:
+            - radio "交易记录" [checked] [ref=e2537]
+            - paragraph [ref=e193]: 交易记录
+      - heading "交易记录" [level=1] [ref=e3269]:
+        - text: 交易记录
+        - generic [ref=e199]:
+          - link "Link to heading":
+            - /url: "#a300f787"
+      - paragraph [ref=e204]: OKX · 手动记录 · 同时最多一笔进行中交易 · 历史暂不做统计分析
+      - button [ref=e3272] [cursor=pointer]:
+        - paragraph [ref=e3277]: 重新加载记录与行情
+      - generic [ref=e3279]:
+        - paragraph [ref=e3283]: 交易状态
+        - radiogroup "交易状态" [ref=e3284]:
+          - generic [ref=e3285] [cursor=pointer]:
+            - radio "进行中" [ref=e3287]
+            - paragraph [ref=e3293]: 进行中
+          - generic [ref=e3294] [cursor=pointer]:
+            - radio "已结束" [checked] [active] [ref=e3296]
+            - paragraph [ref=e3302]: 已结束
+      - heading "ETH-USDT-SWAP · 做空" [level=3] [ref=e3551]:
+        - text: ETH-USDT-SWAP · 做空
+        - link "Link to heading" [ref=e3553] [cursor=pointer]:
+          - /url: "#eth-usdt-swap"
+      - paragraph [ref=e3559]: OKX 交易代码：ETH-USDT-SWAP
+      - paragraph [ref=e3564]: 实际成交价：3000
+      - paragraph [ref=e3569]: 实际数量：0.1
+      - paragraph [ref=e3574]: 开仓时间：2026-10-17T12:05:46+08:00
+      - paragraph [ref=e3579]: 初始退出基准（预估强平价）：3100
+      - paragraph [ref=e3584]: 平仓时间：2026-10-17T12:08:00+08:00
+      - paragraph [ref=e3589]: 实际盈亏（U）：20
+      - paragraph [ref=e3594]: 退出原因：演示平仓（非真实成交）
+      - paragraph [ref=e3599]: 备注：样例记录，仅用于查看多笔历史订单布局。
+      - group [ref=e3602]:
+        - generic "keyboard_arrow_right 原始检查快照（保存后不覆盖）" [ref=e3603] [cursor=pointer]:
+          - generic [ref=e3604]:
+            - generic [ref=e3605]: keyboard_arrow_right
+            - paragraph [ref=e3609]: 原始检查快照（保存后不覆盖）
+      - generic [ref=e3611]:
+        - paragraph [ref=e3615]: 操作
+        - group [ref=e3617]:
+          - combobox "操作" [ref=e3618]: 查看
+          - button "Open" [ref=e3619] [cursor=pointer]
+      - separator [ref=e3627]
+      - heading "BTC-USDT-SWAP · 做多" [level=3] [ref=e3632]:
+        - text: BTC-USDT-SWAP · 做多
+        - generic [ref=e3633]:
+          - link "Link to heading":
+            - /url: "#btc-usdt-swap"
+      - paragraph [ref=e3638]: OKX 交易代码：BTC-USDT-SWAP
+      - paragraph [ref=e3643]: 实际成交价：81000
+      - paragraph [ref=e3648]: 实际数量：0.001
+      - paragraph [ref=e3653]: 开仓时间：2026-10-17T11:16:28+08:00
+      - paragraph [ref=e3658]: 初始退出基准（预估强平价）：79000
+      - paragraph [ref=e3663]: 平仓时间：2026-10-17T11:17:32+08:00
+      - paragraph [ref=e3668]: 实际盈亏（U）：0.43
+      - paragraph [ref=e3673]: 退出原因：浏览器流程模拟（非真实交易，请完成后删除）
+      - paragraph [ref=e3678]: 备注：样例记录，仅用于完整演练checklist到历史订单流程。
+      - group [ref=e3681]:
+        - generic "keyboard_arrow_right 原始检查快照（保存后不覆盖）" [ref=e3682] [cursor=pointer]:
+          - generic [ref=e3683]:
+            - generic [ref=e3684]: keyboard_arrow_right
+            - paragraph [ref=e3688]: 原始检查快照（保存后不覆盖）
+      - generic [ref=e3690]:
+        - paragraph [ref=e3694]: 操作
+        - group [ref=e3696]:
+          - combobox "操作" [ref=e3697]: 查看
+          - button "Open" [ref=e3698] [cursor=pointer]
+      - separator [ref=e3706]

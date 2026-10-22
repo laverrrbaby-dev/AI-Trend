@@ -1,0 +1,77 @@
+- generic:
+  - generic [ref=e899]:
+    - log [ref=e900]:
+      - generic [ref=e3380]: 5 options available.
+      - generic [ref=e3381]: 查看, selected
+    - log
+  - generic [ref=e3]:
+    - banner [ref=e6]:
+      - button "Main menu" [ref=e2528] [cursor=pointer]
+    - generic [ref=e15]:
+      - button [ref=e2529] [cursor=pointer]:
+        - generic "更新并重启服务" [ref=e2530]:
+          - paragraph [ref=e30]: 更新并重启服务
+      - generic [ref=e32]:
+        - paragraph [ref=e36]: 市场
+        - radiogroup "市场" [ref=e2531]:
+          - radio [ref=e2532] [cursor=pointer]:
+            - paragraph [ref=e43]: 美股
+          - radio [checked] [ref=e2533] [cursor=pointer]:
+            - paragraph [ref=e49]: 币圈现货
+      - generic [ref=e161]:
+        - paragraph [ref=e165]: 币圈功能
+        - radiogroup "币圈功能" [ref=e2534]:
+          - generic [ref=e167] [cursor=pointer]:
+            - radio "行情提醒" [ref=e2535]
+            - paragraph [ref=e175]: 行情提醒
+          - generic [ref=e176] [cursor=pointer]:
+            - radio "交易前检查" [ref=e2536]
+            - paragraph [ref=e184]: 交易前检查
+          - generic [ref=e185] [cursor=pointer]:
+            - radio "交易记录" [checked] [ref=e2537]
+            - paragraph [ref=e193]: 交易记录
+      - heading "交易记录" [level=1] [ref=e3269]:
+        - text: 交易记录
+        - generic [ref=e199]:
+          - link "Link to heading":
+            - /url: "#a300f787"
+      - paragraph [ref=e204]: OKX · 手动记录 · 同时最多一笔进行中交易 · 历史暂不做统计分析
+      - status [ref=e2666]:
+        - paragraph [ref=e2670]: 交易已保存，请到“交易记录”查看；交易前检查表已清空。
+      - button [ref=e3272] [cursor=pointer]:
+        - paragraph [ref=e3277]: 重新加载记录与行情
+      - generic [ref=e3279]:
+        - paragraph [ref=e3283]: 交易状态
+        - radiogroup "交易状态" [ref=e3284]:
+          - generic [ref=e3285] [cursor=pointer]:
+            - radio "进行中" [checked] [ref=e3287]
+            - paragraph [ref=e3293]: 进行中
+          - generic [ref=e3294] [cursor=pointer]:
+            - radio "已结束" [ref=e3296]
+            - paragraph [ref=e3302]: 已结束
+      - heading "ETH-USDT-SWAP · 做空" [level=3] [ref=e3307]:
+        - text: ETH-USDT-SWAP · 做空
+        - generic [ref=e3308]:
+          - link "Link to heading":
+            - /url: "#eth-usdt-swap"
+      - paragraph [ref=e3313]: OKX 交易代码：ETH-USDT-SWAP
+      - paragraph [ref=e3318]: 实际成交价：3000
+      - paragraph [ref=e3323]: 实际数量：0.1
+      - paragraph [ref=e3328]: 开仓时间：2026-10-17T12:05:46+08:00
+      - paragraph [ref=e3332]: 初始退出基准（预估强平价）：3100
+      - group [ref=e3334]:
+        - generic "keyboard_arrow_right 原始检查快照（保存后不覆盖）" [ref=e3335] [cursor=pointer]:
+          - generic [ref=e3336]:
+            - generic [ref=e3337]: keyboard_arrow_right
+            - paragraph [ref=e3341]: 原始检查快照（保存后不覆盖）
+      - paragraph [ref=e3346]: OKX ETH-USDT-SWAP · 最新成交价 2425.53 · 行情时间 2026-10-17T12:06:56+08:00
+      - paragraph [ref=e3350]: 参考日 K：2026-10-16 · 收盘 2026-10-17T00:00+08:00 · 东八区
+      - status [ref=e3353]:
+        - paragraph [ref=e3357]: 建议将止损收紧至 2492.97。请在 OKX 手动执行后，再更新当前止损记录。
+      - paragraph [ref=e3362]: 建议不会自动执行，也不会自动结束交易；最新成交价仅用于核对参考位置。
+      - generic [ref=e3364]:
+        - paragraph [ref=e3368]: 操作
+        - group [ref=e3370]:
+          - combobox "操作" [active] [ref=e3371]: 查看
+          - button "Open" [ref=e3372] [cursor=pointer]
+      - separator [ref=e3379]

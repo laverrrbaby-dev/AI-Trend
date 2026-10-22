@@ -1,0 +1,174 @@
+- generic [active]:
+  - generic [ref=e899]:
+    - log
+    - log
+  - generic [ref=e3]:
+    - banner [ref=e6]:
+      - button "Main menu" [ref=e2528] [cursor=pointer]
+    - generic [ref=e15]:
+      - button [ref=e2529] [cursor=pointer]:
+        - generic "更新并重启服务" [ref=e2530]:
+          - paragraph [ref=e30]: 更新并重启服务
+      - generic [ref=e32]:
+        - paragraph [ref=e36]: 市场
+        - radiogroup "市场" [ref=e2531]:
+          - radio [ref=e2532] [cursor=pointer]:
+            - paragraph [ref=e43]: 美股
+          - radio [checked] [ref=e2533] [cursor=pointer]:
+            - paragraph [ref=e49]: 币圈现货
+      - generic [ref=e161]:
+        - paragraph [ref=e165]: 币圈功能
+        - radiogroup "币圈功能" [ref=e2534]:
+          - generic [ref=e167] [cursor=pointer]:
+            - radio "行情提醒" [ref=e2535]
+            - paragraph [ref=e175]: 行情提醒
+          - generic [ref=e176] [cursor=pointer]:
+            - radio "交易前检查" [checked] [ref=e2536]
+            - paragraph [ref=e184]: 交易前检查
+          - generic [ref=e185] [cursor=pointer]:
+            - radio "交易记录" [ref=e2537]
+            - paragraph [ref=e193]: 交易记录
+      - heading "交易前检查" [level=1] [ref=e2663]:
+        - text: 交易前检查
+        - generic [ref=e199]:
+          - link "Link to heading":
+            - /url: "#661e28f4"
+      - paragraph [ref=e204]: OKX · 全仓 · 每笔固定 500U · 初始退出采用强平机制
+      - status [ref=e2666]:
+        - paragraph [ref=e2670]: 先完成检查，再到 OKX 下单。预估强平价是检查时的预估值，不代表保证成交价格。
+      - button [ref=e2673] [cursor=pointer]:
+        - paragraph [ref=e2678]: 重置当前填写
+      - heading "1. 核对账户" [level=3] [ref=e2679]:
+        - text: 1. 核对账户
+        - generic [ref=e2643]:
+          - link "Link to heading":
+            - /url: "#1"
+      - generic [ref=e2681]:
+        - paragraph [ref=e2685]: 实际交易账户资金（U）
+        - textbox "实际交易账户资金（U）" [ref=e2688]:
+          - /placeholder: ""
+      - generic [ref=e2691] [cursor=pointer]:
+        - checkbox "上一笔持仓已结束" [ref=e2693]
+        - paragraph [ref=e2701]: 上一笔持仓已结束
+      - generic [ref=e2704] [cursor=pointer]:
+        - checkbox "剩余挂单已处理" [ref=e2706]
+        - paragraph [ref=e2714]: 剩余挂单已处理
+      - generic [ref=e2717] [cursor=pointer]:
+        - checkbox "上一笔剩余资金或盈利已清理，当前资金为 500U" [ref=e2719]
+        - paragraph [ref=e2727]: 上一笔剩余资金或盈利已清理，当前资金为 500U
+      - generic [ref=e2730] [cursor=pointer]:
+        - checkbox "本次选择 OKX 全仓模式" [ref=e2732]
+        - paragraph [ref=e2740]: 本次选择 OKX 全仓模式
+      - heading "2. 写下交易计划" [level=3] [ref=e2744]:
+        - text: 2. 写下交易计划
+        - generic [ref=e2745]:
+          - link "Link to heading":
+            - /url: "#2"
+      - generic [ref=e2747]:
+        - generic [ref=e2749]:
+          - generic [ref=e2751]:
+            - paragraph [ref=e2755]: 交易品种
+            - textbox "交易品种" [ref=e2758]:
+              - /placeholder: ""
+          - generic [ref=e2760]:
+            - paragraph [ref=e2764]: 交易类型
+            - group [ref=e2766]:
+              - combobox "交易类型" [ref=e2767]
+              - button "Open" [ref=e2772] [cursor=pointer]
+          - generic [ref=e2777]:
+            - paragraph [ref=e2781]: 参考周期
+            - textbox "参考周期" [ref=e2784]:
+              - /placeholder: ""
+        - generic [ref=e2786]:
+          - generic [ref=e2788]:
+            - paragraph [ref=e2792]: 交易方向
+            - group [ref=e2794]:
+              - combobox "交易方向" [ref=e2795]
+              - button "Open" [ref=e2800] [cursor=pointer]
+          - generic [ref=e2805]:
+            - paragraph [ref=e2809]: 计划开仓价
+            - textbox "计划开仓价" [ref=e2812]:
+              - /placeholder: ""
+          - generic [ref=e2814]:
+            - paragraph [ref=e2818]: 原计划退出价
+            - textbox "原计划退出价" [ref=e2821]:
+              - /placeholder: ""
+          - generic [ref=e2823]:
+            - paragraph [ref=e2827]: 计划止盈价
+            - textbox "计划止盈价" [ref=e2830]:
+              - /placeholder: ""
+      - generic [ref=e2832]:
+        - paragraph [ref=e2836]: 退出依据
+        - textbox "退出依据" [ref=e2838]:
+          - /placeholder: 价格行为：注明参考日期、时区和高低点；趋势交易：注明周期、结构和失效价格。
+      - heading "3. 核对实际下单参数" [level=3] [ref=e2842]:
+        - text: 3. 核对实际下单参数
+        - generic [ref=e2843]:
+          - link "Link to heading":
+            - /url: "#3"
+      - generic [ref=e2844]:
+        - generic [ref=e2846]:
+          - generic [ref=e2848]:
+            - paragraph [ref=e2852]: 杠杆倍数
+            - textbox "杠杆倍数" [ref=e2855]:
+              - /placeholder: ""
+          - generic [ref=e2857]:
+            - paragraph [ref=e2861]: 下单数量（按 OKX 显示单位）
+            - textbox "下单数量（按 OKX 显示单位）" [ref=e2864]:
+              - /placeholder: ""
+        - generic [ref=e2866]:
+          - generic [ref=e2868]:
+            - paragraph [ref=e2872]: OKX 预估强平价（执行退出价）
+            - textbox "OKX 预估强平价（执行退出价）" [ref=e2875]:
+              - /placeholder: ""
+          - paragraph [ref=e2880]: 做多：执行退出价 ≤ 原计划退出价；做空：执行退出价 ≥ 原计划退出价。
+      - generic [ref=e2883] [cursor=pointer]:
+        - checkbox "杠杆、数量、预估强平价与 OKX 当前下单页面一致" [ref=e2885]
+        - paragraph [ref=e2893]: 杠杆、数量、预估强平价与 OKX 当前下单页面一致
+      - paragraph [ref=e2894]: 当前草稿已自动保存到本机；修改输入后须重新确认。
+      - heading "4. 最终检查结果" [level=3] [ref=e2899]:
+        - text: 4. 最终检查结果
+        - generic [ref=e2900]:
+          - link "Link to heading":
+            - /url: "#4"
+      - generic [ref=e2902]:
+        - generic [ref=e2907]:
+          - paragraph [ref=e2911]: 原计划退出价
+          - paragraph [ref=e2914]: —
+        - generic [ref=e2919]:
+          - paragraph [ref=e2923]: 执行退出价（OKX 预估）
+          - paragraph [ref=e2926]: —
+        - generic [ref=e2931]:
+          - paragraph [ref=e2935]: 退出价偏差（执行 − 原计划）
+          - paragraph [ref=e2938]: —
+      - generic [ref=e2940]:
+        - generic [ref=e2945]:
+          - paragraph [ref=e2949]: 盈利距离
+          - paragraph [ref=e2952]: —
+        - generic [ref=e2957]:
+          - paragraph [ref=e2961]: 亏损距离
+          - paragraph [ref=e2964]: —
+        - generic [ref=e2969]:
+          - paragraph [ref=e2973]: 计划盈亏比（须 > 1.5）
+          - paragraph [ref=e2976]: —
+      - paragraph [ref=e2981]: 按价格距离计算，未扣手续费及资金费。门槛按未舍入值判断。
+      - alert [ref=e3184]:
+        - paragraph [ref=e2988]: 检查未通过
+      - paragraph [ref=e3188]: • 请填写有效的实际交易账户资金（U）（大于 0，范围 1e-18 至 1e18）。
+      - paragraph [ref=e3193]: • 请填写有效的计划开仓价（大于 0，范围 1e-18 至 1e18）。
+      - paragraph [ref=e3181]: • 请填写有效的原计划退出价（大于 0，范围 1e-18 至 1e18）。
+      - paragraph [ref=e3198]: • 请填写有效的计划止盈价（大于 0，范围 1e-18 至 1e18）。
+      - paragraph [ref=e3203]: • 请填写有效的杠杆倍数（大于 0，范围 1e-18 至 1e18）。
+      - paragraph [ref=e3208]: • 请填写有效的下单数量（按 OKX 显示单位）（大于 0，范围 1e-18 至 1e18）。
+      - paragraph [ref=e3213]: • 请填写有效的OKX 预估强平价（执行退出价）（大于 0，范围 1e-18 至 1e18）。
+      - paragraph [ref=e3218]: • 请填写交易品种。
+      - paragraph [ref=e3223]: • 请填写参考周期。
+      - paragraph [ref=e3228]: • 请填写退出依据。
+      - paragraph [ref=e3233]: • 请选择做多或做空。
+      - paragraph [ref=e3238]: • 请选择价格行为或趋势交易。
+      - paragraph [ref=e3243]: • 尚未确认：上一笔持仓已结束。
+      - paragraph [ref=e3248]: • 尚未确认：剩余挂单已处理。
+      - paragraph [ref=e3253]: • 尚未确认：上一笔剩余资金或盈利已清理，当前资金为 500U。
+      - paragraph [ref=e3258]: • 尚未确认：本次选择 OKX 全仓模式。
+      - paragraph [ref=e3263]: • 尚未确认：杠杆、数量、预估强平价与 OKX 当前下单页面一致。
+      - paragraph [ref=e3268]: 检查结果仅基于手动填写内容，不代表系统已核实 OKX 账户，也不代表交易一定盈利。

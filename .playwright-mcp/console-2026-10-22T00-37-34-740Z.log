@@ -1,0 +1,10 @@
+[   -1816ms] [WARNING] Unrecognized feature: 'ambient-light-sensor'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[   -1816ms] [WARNING] Unrecognized feature: 'battery'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[   -1816ms] [WARNING] Unrecognized feature: 'document-domain'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[   -1816ms] [WARNING] Unrecognized feature: 'layout-animations'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[   -1816ms] [WARNING] Unrecognized feature: 'legacy-image-formats'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[   -1816ms] [WARNING] Unrecognized feature: 'oversized-images'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[   -1816ms] [WARNING] Unrecognized feature: 'vr'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[   -1816ms] [WARNING] Unrecognized feature: 'wake-lock'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[   -1810ms] [WARNING] An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing. @ about:srcdoc:0
+[   -1551ms] [WARNING] An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing. @ http://trend.test/component/app.us_stock_interactive_table/index.html?streamlitUrl=http%3A%2F%2Ftrend.test%2F:0

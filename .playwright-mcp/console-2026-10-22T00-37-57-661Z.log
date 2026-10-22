@@ -1,0 +1,27 @@
+[     243ms] [WARNING] Unrecognized feature: 'ambient-light-sensor'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[     243ms] [WARNING] Unrecognized feature: 'battery'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[     243ms] [WARNING] Unrecognized feature: 'document-domain'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[     243ms] [WARNING] Unrecognized feature: 'layout-animations'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[     243ms] [WARNING] Unrecognized feature: 'legacy-image-formats'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[     243ms] [WARNING] Unrecognized feature: 'oversized-images'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[     244ms] [WARNING] Unrecognized feature: 'vr'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[     244ms] [WARNING] Unrecognized feature: 'wake-lock'. @ http://trend.test/static/js/react-dom.BzV73oHg.js:0
+[     254ms] [WARNING] An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing. @ about:srcdoc:0
+[     438ms] [WARNING] An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing. @ http://trend.test/component/app.us_stock_interactive_table/index.html?streamlitUrl=http%3A%2F%2Ftrend.test%2F:0
+[  153076ms] [WARNING] WebSocket onclose @ http://trend.test/static/js/index.ByR4Z2EF.js:38
+[  153435ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/host-config:0
+[  153436ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/health:0
+[  153540ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/health:0
+[  153540ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/host-config:0
+[  153692ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/host-config:0
+[  153693ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/health:0
+[  154064ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/host-config:0
+[  154065ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/health:0
+[  154847ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/health:0
+[  154848ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/host-config:0
+[  155300ms] [ERROR] Cannot send rerun backMessage when disconnected from server. @ http://trend.test/static/js/index.ByR4Z2EF.js:42
+[  155344ms] [ERROR] Cannot send rerun backMessage when disconnected from server. @ http://trend.test/static/js/index.ByR4Z2EF.js:42
+[  156410ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/health:0
+[  156410ms] [ERROR] Client Error: response received with status 502 when attempting to reach /_stcore/health @ http://trend.test/static/js/index.ByR4Z2EF.js:37
+[  156411ms] [ERROR] Connection failed with status 502. @ http://trend.test/static/js/index.ByR4Z2EF.js:42
+[  156412ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://trend.test/_stcore/host-config:0
