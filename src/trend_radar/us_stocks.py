@@ -424,6 +424,8 @@ def _enrich_us_stock_anomalies(
     history_fetch_json: Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
     history_loader = history_fetch_json or (fetch_json if fetch_json is _fetch_json else None)
+    if history_loader is _fetch_json:
+        history_loader = lambda url, headers, payload: _fetch_json(url, headers, payload, timeout=8, retries=1)
     histories: dict[str, pd.DataFrame] = {}
     for symbol in frame["代码"].astype(str).str.upper():
         history = _load_cached_us_stock_history(root, symbol)

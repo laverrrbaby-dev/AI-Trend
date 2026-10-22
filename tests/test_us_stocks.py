@@ -40,6 +40,20 @@ from trend_radar.us_stock_news import _fetch_json
 
 
 class UsStocksTests(unittest.TestCase):
+    def test_anomaly_enrichment_bounds_yahoo_history_requests(self) -> None:
+        from trend_radar.us_stocks import _enrich_us_stock_anomalies
+
+        payload = {"chart": {"result": []}}
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "trend_radar.us_stocks._fetch_json", return_value=payload
+        ) as fetch_json, patch("trend_radar.us_stocks.evaluate_anomalies", side_effect=lambda frame, *_: frame):
+            _enrich_us_stock_anomalies(
+                pd.DataFrame({"代码": ["MU"]}), Path(directory), "2026-06-03", fetch_json
+            )
+
+        fetch_json.assert_called_once()
+        self.assertEqual(fetch_json.call_args.kwargs, {"timeout": 8, "retries": 1})
+
     def test_stale_nasdaq_fallback_rebuilds_values_from_dated_yahoo_candles(self) -> None:
         def fetch(url, headers, payload):
             if url == TRADINGVIEW_SCANNER_URL:
